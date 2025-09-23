@@ -147,6 +147,8 @@ step 1000: train loss 0.4123, val loss 0.4289
 saving checkpoint to models/deCIFer/...
 ```
 
+TensorBoard logging can be enabled by setting `use_tensorboard: true` in the training configuration. Logs default to `<out_dir>/tensorboard` and can be visualized with `tensorboard --logdir <out_dir>/tensorboard`.
+
 ### Early Stopping
 If validation loss does not improve for a set number of evaluations (early_stopping_patience), training will stop automatically.
 

@@ -12,22 +12,31 @@ import time
 import yaml
 import random
 
-from typing import List
+from typing import List, Optional
 import argparse
 
 import torch
+import torch.distributed as dist
 import numpy as np
 from torch.utils.data import DataLoader
+from torch.utils.data import Subset
 from torch.utils.data import SubsetRandomSampler
 from torch.utils.data import BatchSampler
+from torch.utils.data.distributed import DistributedSampler
 
 from torch.nn.utils.rnn import pad_sequence
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from dataclasses import dataclass, field
 from contextlib import nullcontext
 from tqdm.auto import tqdm
 
 from omegaconf import OmegaConf
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    SummaryWriter = None
 
 from decifer.decifer_model import Decifer, DeciferConfig
 from decifer.tokenizer import Tokenizer
@@ -57,6 +66,42 @@ class RandomBatchSampler(BatchSampler):
         for i in range(0, len(batch_indices), self.batch_size):
             yield batch_indices[i:i + self.batch_size]
 
+
+def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    return model.module if hasattr(model, "module") else model
+
+
+def setup_distributed(config: "TrainConfig"):
+    """Initialise torch.distributed if requested and return env details."""
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    env_rank = int(os.environ.get("RANK", "0"))
+    env_local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    use_distributed = (config.distributed or env_world_size > 1) and env_world_size > 1
+
+    if config.distributed and env_world_size == 1 and env_rank == 0:
+        print("[WARN] Distributed training requested but only one process detected; running in single-process mode.", flush=True)
+
+    if use_distributed and not dist.is_initialized():
+        dist.init_process_group(backend=config.dist_backend, init_method=config.dist_url)
+
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+    else:
+        world_size = 1
+        rank = env_rank
+        local_rank = env_local_rank
+
+    if use_distributed and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        config.device = f"cuda:{local_rank}"
+    elif config.device.startswith("cuda") and not torch.cuda.is_available():
+        config.device = "cpu"
+
+    return use_distributed, world_size, rank, local_rank
+
 @dataclass
 class TrainConfig:
     out_dir: str = "out"  # the path to the folder where the model checkpoints will be stored
@@ -70,6 +115,7 @@ class TrainConfig:
 
     # data
     dataset: str = ""  # Path to the dataset hdf5 files
+    dataset_fraction: float = 1.0  # proportion of each split to use during training (0 < fraction <= 1)
     gradient_accumulation_steps: int = 40  # used to simulate larger batch sizes
     batch_size: int = 64  # if gradient_accumulation_steps > 1, this is the micro-batch size
     block_size: int = 2048  # context of up to `block_size` previous characters
@@ -126,6 +172,11 @@ class TrainConfig:
     compile: bool = False  # use PyTorch 2.0 to compile the model to be faster (Not supported for deCIFer currently)
     validate: bool = False  # whether to evaluate the model using the validation set
     seed: int = 1337
+    distributed: bool = False  # enable DistributedDataParallel training
+    dist_backend: str = "nccl"  # backend used by torch.distributed
+    dist_url: str = "env://"  # init method (default uses torchrun provided env vars)
+    use_tensorboard: bool = False
+    tensorboard_log_dir: Optional[str] = None
 
     # Early stopping
     early_stopping_patience: int = 50
@@ -147,13 +198,16 @@ def parse_config():
     
     if not C.dataset:
         raise Exception("The 'dataset' option is required and cannot be empty")
-    
-    print("Using configuration:", flush=True)
-    print(OmegaConf.to_yaml(C))
-    
-    # Creating output
-    print(f"Creating {C.out_dir}...", flush=True)
+    rank = int(os.environ.get("RANK", "0"))
+    if rank == 0:
+        print("Using configuration:", flush=True)
+        print(OmegaConf.to_yaml(C))
+        print(f"Creating {C.out_dir}...", flush=True)
     os.makedirs(C.out_dir, exist_ok=True)
+    if C.use_tensorboard and not C.tensorboard_log_dir:
+        C.tensorboard_log_dir = os.path.join(C.out_dir, "tensorboard")
+    if C.use_tensorboard and rank == 0:
+        os.makedirs(C.tensorboard_log_dir, exist_ok=True)
 
     # Get metadata (vocab size)
     # metadata_path = os.path.join(C.dataset, "metadata.json")
@@ -169,7 +223,7 @@ def parse_config():
 
     return C
 
-def setup_datasets(C):
+def setup_datasets(C, distributed=False):
     
     # Custom collate function
     def collate_fn(batch):
@@ -196,9 +250,27 @@ def setup_datasets(C):
     train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields)
     val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields)
     test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields)
+
+    dataset_fraction = float(getattr(C, "dataset_fraction", 1.0))
+    if not (0.0 < dataset_fraction <= 1.0):
+        raise ValueError("dataset_fraction must be in the interval (0, 1].")
+
+    def apply_fraction(dataset):
+        if dataset_fraction >= 1.0:
+            return dataset
+        subset_length = max(1, int(math.ceil(len(dataset) * dataset_fraction)))
+        indices = list(range(subset_length))
+        return Subset(dataset, indices)
+
+    train_dataset = apply_fraction(train_dataset)
+    val_dataset = apply_fraction(val_dataset)
+    test_dataset = apply_fraction(test_dataset)
         
     # Random batching sampler, train
-    train_sampler = SubsetRandomSampler(range(len(train_dataset)))
+    if distributed:
+        train_sampler = DistributedSampler(train_dataset, shuffle=True, drop_last=False)
+    else:
+        train_sampler = SubsetRandomSampler(range(len(train_dataset)))
     train_batch_sampler = RandomBatchSampler(train_sampler, batch_size=C.batch_size, drop_last=False)
     train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
     
@@ -218,38 +290,62 @@ def setup_datasets(C):
         "val": val_dataloader,
         "test": test_dataloader,
     }
+    samplers = {
+        "train": train_sampler if distributed else None,
+        "val": val_sampler,
+        "test": test_sampler,
+    }
 
-    return dataloaders
+    return dataloaders, samplers
 
 if __name__ == "__main__":
 
     # Parse configuration
     C = parse_config()
-    
-    # Set seed
-    if C.seed is not None: torch.manual_seed(C.seed)
-    
-    # Setup ctx, note: float16 data type will automatically use a GradScaler
-    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+
+    # Setup distributed environment (no-op when single process)
+    use_distributed, world_size, rank, local_rank = setup_distributed(C)
+    is_main_process = rank == 0
+
+    # Set seed (different per rank for data shuffling)
+    if C.seed is not None:
+        seed = C.seed + rank
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    # Setup device-specific context
+    device_type = "cuda" if C.device.startswith("cuda") else C.device
+    if device_type == "cuda" and torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+        torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[C.dtype]
-    ctx = nullcontext() if C.device == "cpu" else torch.cuda.amp.autocast(dtype=ptdtype)
+    ctx = torch.cuda.amp.autocast(dtype=ptdtype) if device_type == "cuda" and torch.cuda.is_available() else nullcontext()
+
+    writer = None
+    if C.use_tensorboard and is_main_process:
+        if SummaryWriter is None:
+            print("[WARN] TensorBoard SummaryWriter not available; install the 'tensorboard' package to enable logging.", flush=True)
+        else:
+            writer = SummaryWriter(log_dir=C.tensorboard_log_dir)
+            print(f"TensorBoard logging to {C.tensorboard_log_dir}", flush=True)
 
     # Setup datasets
-    dataloaders = setup_datasets(C)
+    dataloaders, samplers = setup_datasets(C, distributed=use_distributed)
+    sampler_epochs = {split: 0 for split in dataloaders.keys()}
 
     # Augmentation kwargs
     augmentation_kwargs = {
         'qmin': C.qmin,
         'qmax': C.qmax,
         'qstep': C.qstep,
-        # 'wavelength': C.wavelength,
         'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
         'eta_range': (C.eta_range_min, C.eta_range_max),
         'noise_range': (C.noise_range_min, C.noise_range_max),
         'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
         'mask_prob': C.mask_prob,
-        # 'size': len(np.arange(C.qmin, C.qmax, C.qstep))
     }
 
     # Initialize training metrics
@@ -265,8 +361,8 @@ if __name__ == "__main__":
     # Set model arguments
     model_args = dict(
         n_layer=C.n_layer,
-        n_head=C.n_head, 
-        n_embd=C.n_embd, 
+        n_head=C.n_head,
+        n_embd=C.n_embd,
         block_size=C.block_size,
         condition_size=len(np.arange(C.qmin, C.qmax, C.qstep)),
         bias=C.bias,
@@ -274,13 +370,14 @@ if __name__ == "__main__":
         dropout=C.dropout,
         condition=C.condition,
         boundary_masking=C.boundary_masking,
-        condition_embedder_hidden_layers = C.condition_embedder_hidden_layers,
+        condition_embedder_hidden_layers=C.condition_embedder_hidden_layers,
     )
 
     if C.init_from == "scratch":
-        print("Initializing a new model from scratch...", flush=True)
+        if is_main_process:
+            print("Initializing a new model from scratch...", flush=True)
         model = Decifer(DeciferConfig(**model_args))
-    
+
         checkpoint = {
             'model_args': model_args,
             'training_metrics': training_metrics,
@@ -291,11 +388,12 @@ if __name__ == "__main__":
         }
 
     elif C.init_from == "resume":
-        print(f"Resuming training from {C.out_dir}...", flush=True)
+        if is_main_process:
+            print(f"Resuming training from {C.out_dir}...", flush=True)
 
         # Find checkpoint
         ckpt_path = os.path.join(C.out_dir, "ckpt.pt")
-        checkpoint = torch.load(ckpt_path, map_location=C.device)
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
         checkpoint_model_args = checkpoint["model_args"]
 
         # Force these config attributes to be equal otherwise we can't even resume training
@@ -315,10 +413,11 @@ if __name__ == "__main__":
         for key in ['train_losses', 'val_losses', 'epochs']:
             if key in checkpoint['training_metrics']:
                 training_metrics[key] = checkpoint['training_metrics'][key]
-                print(f"Loaded {key}.")
+                if is_main_process:
+                    print(f"Loaded {key}.")
             else:
-                print(f"Could not find {key}, creating empty list")
-
+                if is_main_process:
+                    print(f"Could not find {key}, creating empty list")
         training_metrics['iteration_number'] = checkpoint["training_metrics"]["iteration_number"]
         training_metrics['best_val_loss'] = checkpoint["training_metrics"]["best_val_loss"]
     else:
@@ -328,7 +427,7 @@ if __name__ == "__main__":
     model.to(C.device)
 
     # initialize a GradScaler; if enabled=False scaler is a no-op
-    scaler = torch.cuda.amp.GradScaler(enabled=(C.dtype == "float16"))
+    scaler = torch.cuda.amp.GradScaler(enabled=(device_type == "cuda" and C.dtype == "float16" and torch.cuda.is_available()))
 
     # Initialize Optimizer
     optimizer = model.configure_optimizers(C.weight_decay, C.learning_rate, (C.beta1, C.beta2))
@@ -337,19 +436,29 @@ if __name__ == "__main__":
 
     # Compile model (pytorch 2.0) if specified
     if C.compile:
-        print("Compiling the model (takes a ~minute)...", flush=True)
+        if is_main_process:
+            print("Compiling the model (takes a ~minute)...", flush=True)
         unoptimized_model = model
         model = torch.compile(model)  # requires PyTorch 2.0
-    
+
+    # Wrap model with DistributedDataParallel if needed
+    if use_distributed:
+        ddp_kwargs = {}
+        if device_type == "cuda" and torch.cuda.is_available():
+            ddp_kwargs["device_ids"] = [local_rank]
+            ddp_kwargs["output_device"] = local_rank
+        model = DDP(model, **ddp_kwargs)
+
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
 
-    #@profile
     def get_batch(split):
 
         # Retrieve the dataloader and initialize the iterator
         dataloader = dataloaders[split]
         if split not in data_iters:
+            if samplers.get(split) is not None and hasattr(samplers[split], "set_epoch"):
+                samplers[split].set_epoch(sampler_epochs[split])
             data_iters[split] = iter(dataloader)
         data_iter = data_iters[split]
 
@@ -357,12 +466,18 @@ if __name__ == "__main__":
         start_indices_list = []
         cond_list = []
 
-        # Collect sequences until we have enough to fill the batch
+        # Collect sequences until we have enough tokens to form at least one full block
         total_sequences = []
-        while len(total_sequences) < C.batch_size:
+        total_token_count = 0
+        max_extra_fetches = 5
+        extra_fetches = 0
+        while total_token_count < C.block_size or len(total_sequences) < C.batch_size:
             try:
                 batch = next(data_iter)
             except StopIteration:
+                sampler_epochs[split] += 1
+                if samplers.get(split) is not None and hasattr(samplers[split], "set_epoch"):
+                    samplers[split].set_epoch(sampler_epochs[split])
                 data_iter = iter(dataloader)
                 data_iters[split] = data_iter
                 batch = next(data_iter)
@@ -371,13 +486,72 @@ if __name__ == "__main__":
             sequences = batch['cif_tokens']
             sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
             total_sequences.extend(sequences)
+            total_token_count += sum(int(seq.numel()) for seq in sequences)
 
             # Fetch conditioning and augment to cont signals
             if C.condition:
                 cond_list.extend(discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq'])
 
-        # Now pack sequences into batches without loops
-        # Concatenate all sequences into one long tensor
+        if not total_sequences:
+            raise RuntimeError("Failed to collect any sequences for batching.")
+
+        # Attempt to ensure we can form at least one complete block
+        while True:
+            if not total_sequences:
+                raise RuntimeError(f"Unable to collect tokens for split '{split}'.")
+
+            all_tokens = torch.cat(total_sequences)
+            if all_tokens.numel() == 0:
+                raise RuntimeError(f"Collected tensor for split '{split}' is empty; check dataset integrity.")
+
+            num_full_blocks = all_tokens.size(0) // C.block_size
+            num_batches = min(C.batch_size, num_full_blocks)
+
+            if num_batches > 0:
+                break
+
+            if extra_fetches < max_extra_fetches:
+                extra_fetches += 1
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    sampler_epochs[split] += 1
+                    if samplers.get(split) is not None and hasattr(samplers[split], "set_epoch"):
+                        samplers[split].set_epoch(sampler_epochs[split])
+                    data_iter = iter(dataloader)
+                    data_iters[split] = data_iter
+                    batch = next(data_iter)
+
+                sequences = batch['cif_tokens']
+                sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
+                total_sequences.extend(sequences)
+                total_token_count += sum(int(seq.numel()) for seq in sequences)
+                if C.condition:
+                    cond_list.extend(discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq'])
+                continue
+
+            # Final fallback: repeat collected sequences to satisfy the required block size
+            if is_main_process:
+                print(
+                    f"[WARN] {split}: insufficient tokens to form block_size={C.block_size} after {max_extra_fetches} extra fetches. "
+                    "Repeating collected sequences to proceed.",
+                    flush=True,
+                )
+
+            tokens_available = all_tokens.size(0)
+            if tokens_available == 0:
+                raise RuntimeError(
+                    f"Unable to form a full block for split '{split}'; no tokens collected after retries."
+                )
+
+            repeat_factor = max(1, math.ceil(C.block_size / tokens_available))
+            total_sequences = total_sequences * repeat_factor
+            if C.condition and cond_list:
+                cond_list = cond_list * repeat_factor
+            total_token_count = sum(int(seq.numel()) for seq in total_sequences)
+            # Loop back to recompute using the expanded sequence list
+
+        # With a sufficient number of tokens, pack sequences into batches without explicit loops
         all_tokens = torch.cat(total_sequences)
 
         # Compute the lengths of sequences
@@ -386,9 +560,11 @@ if __name__ == "__main__":
         # Compute cumulative lengths to find sequence boundaries
         seq_cum_lengths = torch.cumsum(seq_lengths, dim=0)
 
-        # Calculate how many full blocks we can get from the concatenated tokens
-        num_full_blocks = all_tokens.size(0) // C.block_size
-        num_batches = min(C.batch_size, num_full_blocks)
+        if num_batches == 0:
+            raise RuntimeError(
+                f"Unable to form a full block for split '{split}' even after retries; "
+                f"collected_tokens={all_tokens.size(0)}, block_size={C.block_size}."
+            )
 
         # Truncate the tokens to fit into an integer number of blocks
         total_tokens = all_tokens[:num_batches * C.block_size]
@@ -411,151 +587,190 @@ if __name__ == "__main__":
             start_indices_list.append(indices)
 
         # Handle conditioning data if required
-        # Collect conditioning data corresponding to sequences included
         cond_batch = None
         if C.condition:
-            index = torch.searchsorted(seq_cum_lengths, num_batches * C.block_size) + 1
-            cond_list = cond_list[:index]
+            tokens_used = num_batches * C.block_size
+            if tokens_used == 0:
+                raise RuntimeError("Conditioning requested but no tokens were allocated to the batch.")
+
+            search_value = torch.tensor(tokens_used, device=seq_cum_lengths.device)
+            search_index = int(torch.searchsorted(seq_cum_lengths, search_value, right=False).item())
+            num_sequences_used = min(search_index + 1, len(cond_list))
+
+            if num_sequences_used == 0:
+                raise RuntimeError(
+                    "Conditioning requested but no conditioning vectors were gathered;"
+                    " verify dataset annotations."
+                )
+
+            cond_list = cond_list[:num_sequences_used]
             cond_batch = torch.stack(cond_list)
-        
+
+            required_conditionals = sum(len(indices) for indices in start_indices_list)
+            if required_conditionals == 0:
+                cond_batch = None
+            else:
+                if cond_batch.size(0) < required_conditionals:
+                    raise RuntimeError(
+                        f"Conditioning vectors ({cond_batch.size(0)}) fewer than required insertions ({required_conditionals})."
+                    )
+                if cond_batch.size(0) > required_conditionals:
+                    cond_batch = cond_batch[:required_conditionals]
+
         # Send to device (CUDA/CPU)
-        if C.device == "cuda":
+        if device_type == "cuda" and torch.cuda.is_available():
             X_batch = X_batch.pin_memory().to(C.device, non_blocking=True)
             Y_batch = Y_batch.pin_memory().to(C.device, non_blocking=True)
             if cond_batch is not None:
                 cond_batch = cond_batch.pin_memory().to(C.device, non_blocking=True)
         else:
-            X_batch = X_batch.pin_memory().to(C.device)
-            Y_batch = Y_batch.pin_memory().to(C.device)
+            X_batch = X_batch.to(C.device)
+            Y_batch = Y_batch.to(C.device)
             if cond_batch is not None:
-                cond_batch = cond_batch.pin_memory().to(C.device)
+                cond_batch = cond_batch.to(C.device)
 
-        # Return the batch data and start indices
         return X_batch, Y_batch, cond_batch, start_indices_list
 
-    # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
     def estimate_loss():
         out = {}
         model.eval()
+        loss_device = torch.device(C.device) if device_type == "cuda" and torch.cuda.is_available() else torch.device("cpu")
         for split, eval_iters in [("train", C.eval_iters_train), ("val", C.eval_iters_val)]:
-            losses = torch.zeros(eval_iters)
-            for k in range(eval_iters):
+            if eval_iters <= 0:
+                out[split] = 0.0
+                continue
+
+            total_loss = torch.zeros(1, device=loss_device, dtype=torch.float32)
+            for _ in range(eval_iters):
                 X, Y, cond, start_indices = get_batch(split)
                 with ctx:
                     _, loss = model(X, cond, Y, start_indices)
-                losses[k] = loss.item()
-            out[split] = losses.mean()
+                total_loss += loss.detach().to(loss_device, dtype=torch.float32)
+
+            total_loss /= eval_iters
+            if use_distributed:
+                dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+                total_loss /= world_size
+
+            out[split] = total_loss.item()
         model.train()
         return out
 
-    # learning rate decay scheduler (cosine with warmup)
     def get_lr(it):
-        # 1) linear warmup for warmup_iters steps
         if it < C.warmup_iters:
             return C.learning_rate * it / C.warmup_iters
-        # 2) if it > lr_decay_iters, return min learning rate
         if it > C.lr_decay_iters:
             return C.min_lr
-        # 3) in between, use cosine decay down to min learning rate
         decay_ratio = (it - C.warmup_iters) / (C.lr_decay_iters - C.warmup_iters)
         assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return C.min_lr + coeff * (C.learning_rate - C.min_lr)
 
-    # training loop
     X, Y, cond, start_indices = get_batch("train")
     t0 = time.time()
-    local_iteration_number = 0  # number of iterations in the lifetime of this process
-    while True:
-        # Determine and set the learning rate for this iteration
+    local_iteration_number = 0
+    stop_training = False
+    while not stop_training:
         lr = get_lr(training_metrics['iteration_number']) if C.decay_lr else C.learning_rate
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
-        # evaluate the loss on train/val sets and write checkpoints
         if training_metrics['iteration_number'] % C.eval_interval == 0:
             if C.validate:
-
-                # Esimate loss
                 losses = estimate_loss()
+                if is_main_process:
+                    training_metrics['train_losses'].append(losses['train'])
+                    training_metrics['val_losses'].append(losses['val'])
+                    training_metrics['epochs'].append(training_metrics['iteration_number'])
+                    print(
+                        f"step {training_metrics['iteration_number']}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}",
+                        flush=True,
+                    )
+                    if writer is not None:
+                        writer.add_scalar("eval/train_loss", losses['train'], training_metrics['iteration_number'])
+                        writer.add_scalar("eval/val_loss", losses['val'], training_metrics['iteration_number'])
 
-                # Update metrics
-                training_metrics['train_losses'].append(losses['train'])
-                training_metrics['val_losses'].append(losses['val'])
-                training_metrics['epochs'].append(training_metrics['iteration_number'])
-                print(f"step {training_metrics['iteration_number']}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}", flush=True)
-
-                # Check if new best model is found; if so, save, else patience score recal
-                if losses["val"] > training_metrics['best_val_loss'] and local_iteration_number != 0:
-                    training_metrics['patience_counter'] += 1
-                    print("Patience score increasing to:", training_metrics['patience_counter'])
-                else:
-                    training_metrics['best_val_loss'] = losses['val']
-                    checkpoint['best_model_state'] = copy.deepcopy(model.state_dict())
-                    checkpoint['best_optimizer_state'] = copy.deepcopy(optimizer.state_dict())
-                    if training_metrics['patience_counter'] > 0:
-                        print("Patience score resetting.")
+                    if losses["val"] > training_metrics['best_val_loss'] and local_iteration_number != 0:
+                        training_metrics['patience_counter'] += 1
+                        print("Patience score increasing to:", training_metrics['patience_counter'])
+                    else:
+                        training_metrics['best_val_loss'] = losses['val']
+                        checkpoint['best_model_state'] = copy.deepcopy(unwrap_model(model).state_dict())
+                        checkpoint['best_optimizer_state'] = copy.deepcopy(optimizer.state_dict())
+                        if training_metrics['patience_counter'] > 0:
+                            print("Patience score resetting.")
                         training_metrics['patience_counter'] = 0
 
-                if training_metrics['iteration_number'] > 0:
+                    if training_metrics['iteration_number'] > 0:
+                        checkpoint.update({
+                            "local_iteration_number": local_iteration_number,
+                            'training_metrics': training_metrics,
+                            'current_model': unwrap_model(model).state_dict(),
+                            "current_optimizer": optimizer.state_dict(),
+                        })
+                        print(f"saving checkpoint to {C.out_dir}...", flush=True)
+                        torch.save(checkpoint, os.path.join(C.out_dir, "ckpt.pt"))
 
-                    # Update checkpoint
-                    checkpoint.update({
-                        "local_iteration_number": local_iteration_number,
-                        'training_metrics': training_metrics,
-                        'current_model': model.state_dict(),
-                        "current_optimizer": optimizer.state_dict(),
-                    })
-
-                    print(f"saving checkpoint to {C.out_dir}...", flush=True)
-                    torch.save(checkpoint, os.path.join(C.out_dir, "ckpt.pt"))
-
-                if training_metrics['patience_counter'] >= C.early_stopping_patience:
-                    print(f"Early stopping triggered after {training_metrics['iteration_number']} iterations")
-                    break
-
+                    if training_metrics['patience_counter'] >= C.early_stopping_patience:
+                        print(f"Early stopping triggered after {training_metrics['iteration_number']} iterations")
+                        stop_training = True
             else:
                 training_metrics['best_val_loss'] = 0.
 
         if training_metrics['iteration_number'] == 0 and C.eval_only:
+            stop_training = True
+
+        if use_distributed:
+            stop_tensor = torch.tensor([int(stop_training)], device=torch.device(C.device) if device_type == "cuda" and torch.cuda.is_available() else torch.device("cpu"))
+            dist.broadcast(stop_tensor, src=0)
+            stop_training = bool(stop_tensor.item())
+
+        if stop_training:
             break
 
-        # Forward backward update, with optional gradient accumulation to simulate larger batch size
-        # and using the GradScaler if data type is float16
-        small_step_pbar = tqdm(desc='Accumulating losses...', total=C.gradient_accumulation_steps, leave=False, disable=not C.accumulative_pbar)
+        pbar_disabled = not (C.accumulative_pbar and is_main_process)
+        small_step_pbar = tqdm(desc='Accumulating losses...', total=C.gradient_accumulation_steps, leave=False, disable=pbar_disabled)
         for micro_step in range(C.gradient_accumulation_steps):
             with ctx:
                 logits, loss = model(X, cond, Y, start_indices)
-                
-            # immediately async prefetch next batch while model is doing the forward pass on the GPU
+
             X, Y, cond, start_indices = get_batch("train")
-            # backward pass, with gradient scaling if training in fp16
             scaler.scale(loss).backward()
             small_step_pbar.update(1)
 
         small_step_pbar.close()
-        # clip the gradient
         if C.grad_clip != 0.0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), C.grad_clip)
-        # step the optimizer and scaler if training in fp16
         scaler.step(optimizer)
         scaler.update()
 
-        # flush the gradients as soon as we can, no need for this memory anymore
         optimizer.zero_grad(set_to_none=True)
 
-        # timing and logging
         t1 = time.time()
         dt = t1 - t0
         t0 = t1
-        if training_metrics['iteration_number'] % C.log_interval == 0:
-            lossf = loss.item()  # loss as float. note: this is a CPU-GPU sync point
+        if training_metrics['iteration_number'] % C.log_interval == 0 and is_main_process:
+            lossf = loss.item()
             print(f"iter {training_metrics['iteration_number']}: loss {lossf:.4f}, time {dt * 1000:.2f}ms", flush=True)
+            if writer is not None:
+                writer.add_scalar("train/loss", lossf, training_metrics['iteration_number'])
+                writer.add_scalar("train/lr", lr, training_metrics['iteration_number'])
         training_metrics['iteration_number'] += 1
         local_iteration_number += 1
 
-        # termination conditions
         if training_metrics['iteration_number'] > C.max_iters:
+            stop_training = True
+            if use_distributed:
+                stop_tensor = torch.tensor([1], device=torch.device(C.device) if device_type == "cuda" and torch.cuda.is_available() else torch.device("cpu"))
+                dist.broadcast(stop_tensor, src=0)
             break
+
+    if use_distributed and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+    if writer is not None:
+        writer.flush()
+        writer.close()
