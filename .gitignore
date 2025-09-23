@@ -41,3 +41,7 @@ notebooks_testing/
 
 # Ignore example cifs
 example_cifs/
+
+runs/*
+.gitignore
+
