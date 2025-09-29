@@ -11,6 +11,7 @@ import math
 import time
 import yaml
 import random
+import pickle
 
 from typing import List, Optional
 import argparse
@@ -393,7 +394,23 @@ if __name__ == "__main__":
 
         # Find checkpoint
         ckpt_path = os.path.join(C.out_dir, "ckpt.pt")
-        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        try:
+            from torch.serialization import add_safe_globals
+            from omegaconf.listconfig import ListConfig
+            add_safe_globals([ListConfig])
+        except Exception as err:
+            if is_main_process:
+                print(f"[WARN] Could not register safe globals for checkpoint loading: {err}", flush=True)
+
+        try:
+            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(ckpt_path, map_location="cpu")
+        except pickle.UnpicklingError as err:
+            raise RuntimeError(
+                "Failed to load checkpoint. If the file is trusted, delete it or "
+                "re-run with a checkpoint generated using PyTorch >=2.6"
+            ) from err
         checkpoint_model_args = checkpoint["model_args"]
 
         # Force these config attributes to be equal otherwise we can't even resume training
