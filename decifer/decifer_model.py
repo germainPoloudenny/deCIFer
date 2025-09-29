@@ -586,7 +586,150 @@ class Decifer(nn.Module):
             seq_len = seq_lens[i].item()
             idx_truncated[i, :seq_len] = idx[i, :seq_len]
         return idx_truncated
-    
+
+    @torch.no_grad()
+    def generate_beam_search(
+        self,
+        idx,
+        max_new_tokens,
+        cond_vec=None,
+        start_indices_batch=None,
+        beam_size: int = 4,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        length_penalty: float = 1.0,
+        disable_pbar: bool = False,
+        custom_cond_emb=None,
+    ):
+        """Generate sequences with beam search.
+
+        Args:
+            idx (torch.Tensor): Prompt tensor of shape ``(batch_size, seq_len)``.
+            max_new_tokens (int): Maximum number of new tokens to generate.
+            cond_vec (Optional[torch.Tensor]): Conditioning tensor if required by the model.
+            start_indices_batch (Optional[List[List[int]]]): Start indices used by the conditional model.
+            beam_size (int): Beam width.
+            temperature (float): Softmax temperature applied to logits.
+            top_k (Optional[int]): Restrict candidates to the top ``k`` tokens.
+            length_penalty (float): Length penalty applied when ranking beams.
+            disable_pbar (bool): Disable progress bar.
+            custom_cond_emb (Optional[torch.Tensor]): Custom conditioning embeddings.
+
+        Returns:
+            torch.Tensor: Generated sequences (``beam_size`` x ``seq_len``) padded with ``Tokenizer().padding_id``.
+        """
+
+        if beam_size <= 0:
+            raise ValueError("beam_size must be a positive integer")
+
+        if idx.size(0) != 1:
+            raise ValueError("Beam search currently supports a batch size of 1 for the prompt")
+
+        device = idx.device
+        prompt = idx[0:1]
+        start_indices_batch = start_indices_batch or [[0]]
+
+        def _expand_start_indices(size: int):
+            if len(start_indices_batch) == size:
+                return [list(s) for s in start_indices_batch]
+            if len(start_indices_batch) == 1:
+                return [list(start_indices_batch[0]) for _ in range(size)]
+            raise ValueError("start_indices_batch length must match beam size or be 1")
+
+        def _expand_tensor(tensor: Optional[torch.Tensor], size: int) -> Optional[torch.Tensor]:
+            if tensor is None:
+                return None
+            expanded = tensor.expand(size, *tensor.shape[1:])
+            return expanded
+
+        class BeamState:
+            __slots__ = ("seq", "score", "finished", "prev_token", "generated_len")
+
+            def __init__(self, seq, score, finished, prev_token, generated_len):
+                self.seq = seq
+                self.score = score
+                self.finished = finished
+                self.prev_token = prev_token
+                self.generated_len = generated_len
+
+            def adjusted_score(self):
+                length = max(1, self.generated_len)
+                return self.score / (length ** length_penalty)
+
+        beams = [BeamState(prompt.clone(), 0.0, False, -1, 0)]
+
+        generation_pbar = tqdm(total=max_new_tokens, desc='Generating sequence', leave=False, disable=disable_pbar)
+        for _ in range(max_new_tokens):
+            active_indices = [i for i, state in enumerate(beams) if not state.finished]
+            if not active_indices:
+                break
+
+            sequences = torch.cat([beams[i].seq for i in active_indices], dim=0)
+            idx_cond = sequences if sequences.size(1) <= self.config.block_size else sequences[:, -self.config.block_size:]
+            cond_vec_expanded = _expand_tensor(cond_vec, len(active_indices))
+            custom_cond_emb_expanded = _expand_tensor(custom_cond_emb, len(active_indices))
+            start_indices_expanded = _expand_start_indices(len(active_indices))
+
+            logits, _ = self(
+                idx_cond,
+                cond_vec=cond_vec_expanded,
+                start_indices_batch=start_indices_expanded,
+                custom_cond_emb=custom_cond_emb_expanded,
+            )
+
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            log_probs = F.log_softmax(logits, dim=-1)
+
+            candidates = [beam for beam in beams if beam.finished]
+
+            for local_idx, beam_idx in enumerate(active_indices):
+                state = beams[beam_idx]
+                token_log_probs = log_probs[local_idx]
+                candidates_per_beam = min(beam_size, token_log_probs.size(0))
+                if top_k is not None:
+                    candidates_per_beam = min(candidates_per_beam, top_k)
+                top_scores, top_tokens = torch.topk(token_log_probs, candidates_per_beam)
+
+                for log_prob, token in zip(top_scores, top_tokens):
+                    token_id = int(token.item())
+                    log_prob_value = float(log_prob.item())
+                    token_tensor = torch.tensor([[token_id]], device=device, dtype=state.seq.dtype)
+                    new_seq = torch.cat((state.seq, token_tensor), dim=1)
+                    new_score = state.score + log_prob_value
+                    new_generated_len = state.generated_len + 1
+                    finished = False
+
+                    if token_id == PADDING_ID:
+                        new_seq = new_seq[:, :-1]
+                        new_generated_len = state.generated_len
+                        finished = True
+                    elif state.prev_token == NEWLINE_ID and token_id == NEWLINE_ID:
+                        finished = True
+
+                    candidates.append(
+                        BeamState(
+                            new_seq,
+                            new_score,
+                            finished,
+                            token_id,
+                            new_generated_len,
+                        )
+                    )
+
+            beams = sorted(candidates, key=lambda b: b.adjusted_score(), reverse=True)[:beam_size]
+            generation_pbar.update(1)
+
+        generation_pbar.close()
+
+        beams = sorted(beams, key=lambda b: b.adjusted_score(), reverse=True)
+        sequences = [beam.seq.squeeze(0) for beam in beams]
+
+        padded = nn.utils.rnn.pad_sequence(sequences, batch_first=True, padding_value=PADDING_ID)
+        return padded
+
     @torch.no_grad()
     def generate_and_print(self, idx, max_new_tokens, cond_vec=None, start_indices_batch=None, temperature=1.0, top_k=None, custom_cond_emb=None):
         """

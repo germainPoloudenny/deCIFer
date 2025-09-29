@@ -407,6 +407,8 @@ def process_dataset(
     max_samples: Optional[int] = None,
     debug_max: Optional[int] = None,
     debug: bool = False,
+    beam_size: int = 1,
+    length_penalty: float = 1.0,
 ) -> Tuple[int, int]:
     """
     Processes a dataset for evaluation by generating tasks for model inference.
@@ -431,10 +433,15 @@ def process_dataset(
         max_samples (Optional[int]): Maximum number of dataset samples to evaluate. Defaults to None (all samples).
         debug_max (Optional[int]): Debug mode limit for maximum samples to process. Defaults to None.
         debug (bool): Enable debug mode. Defaults to False.
+        beam_size (int): Beam width for beam search generation. Defaults to 1 (disabled).
+        length_penalty (float): Length penalty applied when ranking beam search candidates. Defaults to 1.0.
 
     Returns:
         Tuple[int, int]: Number of generations processed and number of tasks sent.
     """
+    if beam_size < 1:
+        raise ValueError("beam_size must be at least 1")
+
     # Load the dataset
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_tokens", "xrd.q", "xrd.iq", "cif_string", "spacegroup"])
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl.gz")))
@@ -467,10 +474,30 @@ def process_dataset(
             )
             cond_vec = xrd_input['iq'].to(model.device)
             try:
-                cif_token_gen = model.generate_batched_reps(
-                    prompt, max_new_tokens, cond_vec, [[0]], temperature, top_k
-                ).cpu().numpy()
-            except:
+                if beam_size > 1:
+                    cif_token_gen_tensor = model.generate_beam_search(
+                        prompt,
+                        max_new_tokens,
+                        cond_vec=cond_vec,
+                        start_indices_batch=[[0]],
+                        beam_size=beam_size,
+                        temperature=temperature,
+                        top_k=top_k,
+                        length_penalty=length_penalty,
+                        disable_pbar=True,
+                    )
+                else:
+                    cif_token_gen_tensor = model.generate_batched_reps(
+                        prompt,
+                        max_new_tokens,
+                        cond_vec,
+                        [[0]],
+                        temperature,
+                        top_k,
+                        disable_pbar=True,
+                    )
+                cif_token_gen = cif_token_gen_tensor.cpu().numpy()
+            except Exception:
                 print(f"Error in generating CIF for {cif_name_sample}")
                 pbar.update(1)
                 continue
@@ -567,6 +594,8 @@ def main():
     parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD.')
     parser.add_argument('--temperature', type=float, default=1.0, help='')
     parser.add_argument('--top-k', type=int, default=None, help='')
+    parser.add_argument('--beam-size', type=int, default=1, help='Beam width for beam search generation.')
+    parser.add_argument('--length-penalty', type=float, default=1.0, help='Length penalty applied during beam search ranking.')
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
     parser.add_argument('--default_fwhm', type=float, default=0.05, help='')
@@ -667,6 +696,8 @@ def main():
         xrd_clean_dict=clean_dict,
         temperature=args.temperature,
         top_k=args.top_k,
+        beam_size=args.beam_size,
+        length_penalty=args.length_penalty,
     )
 
     if num_send > 0:
