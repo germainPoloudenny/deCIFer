@@ -122,7 +122,7 @@ def extract_prompt_batch(sequences, device, add_composition=True, add_spacegroup
 def load_model_from_checkpoint(ckpt_path, device):
     
     # Checkpoint
-    checkpoint = torch.load(ckpt_path, map_location=device)  # Load checkpoint
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)  # Load checkpoint
     state_dict = checkpoint.get("best_model_state", checkpoint.get("best_model"))
     
     model_args = checkpoint["model_args"]
@@ -404,6 +404,7 @@ def process_dataset(
     xrd_augmentation_dict: Optional[Dict] = None,
     xrd_clean_dict: Optional[Dict] = None,
     max_new_tokens: int = 256,
+    max_samples: Optional[int] = None,
     debug_max: Optional[int] = None,
     debug: bool = False,
 ) -> Tuple[int, int]:
@@ -427,6 +428,7 @@ def process_dataset(
         xrd_augmentation_dict (Optional[Dict]): XRD augmentation parameters. Defaults to None.
         xrd_clean_dict (Optional[Dict]): XRD cleaning parameters. Defaults to None.
         max_new_tokens (int): Maximum number of tokens to generate. Defaults to 256.
+        max_samples (Optional[int]): Maximum number of dataset samples to evaluate. Defaults to None (all samples).
         debug_max (Optional[int]): Debug mode limit for maximum samples to process. Defaults to None.
         debug (bool): Enable debug mode. Defaults to False.
 
@@ -436,20 +438,22 @@ def process_dataset(
     # Load the dataset
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_tokens", "xrd.q", "xrd.iq", "cif_string", "spacegroup"])
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl.gz")))
-    num_generations = len(dataset) * num_repetitions - len(existing_eval_files) if debug_max is None else min(len(dataset) * num_repetitions, debug_max)
-    num_send = num_generations
-    pbar = tqdm(total=num_generations, desc='Generating and parsing evaluation tasks...', leave=True)
+    total_samples = len(dataset) if max_samples is None else min(len(dataset), max_samples)
+    num_generations = 0
+    pbar = tqdm(total=total_samples, desc='Generating and parsing evaluation tasks...', leave=True)
     padding_id = Tokenizer().padding_id
 
     for i, data in enumerate(iter(dataset)):
-        if i >= num_generations:
+        if i >= total_samples:
+            break
+
+        if debug_max is not None and num_generations >= debug_max:
             break
 
         cif_name_sample = data['cif_name']
         cif_name_sample = cif_name_sample.split(".")[0]
         if not override and any(f.startswith(cif_name_sample) for f in existing_eval_files):
             pbar.update(1)
-            num_send -= 1
             continue
 
         prompt = None if model is None else extract_prompt(
@@ -469,7 +473,6 @@ def process_dataset(
             except:
                 print(f"Error in generating CIF for {cif_name_sample}")
                 pbar.update(1)
-                num_send -= 1
                 continue
             cif_token_gen = [ids[ids != padding_id] for ids in cif_token_gen]
         else:
@@ -478,7 +481,16 @@ def process_dataset(
         xrd_q_cont = xrd_input['q'].squeeze(0).numpy() if xrd_input else None
         xrd_iq_cont = xrd_input['iq'].squeeze(0).numpy() if xrd_input else None
 
-        for rep_num in range(num_repetitions):
+        reps_to_generate = num_repetitions
+        if debug_max is not None:
+            reps_to_generate = min(reps_to_generate, max(debug_max - num_generations, 0))
+        reps_to_generate = min(reps_to_generate, len(cif_token_gen))
+
+        if reps_to_generate <= 0:
+            pbar.update(1)
+            continue
+
+        for rep_num in range(reps_to_generate):
             task = {
                 'cif_name': cif_name_sample,
                 'dataset_name': dataset_name,
@@ -498,13 +510,18 @@ def process_dataset(
                 'debug': debug,
             }
             input_queue.put(task)
+            num_generations += 1
+
         pbar.update(1)
+
+        if debug_max is not None and num_generations >= debug_max:
+            break
 
     pbar.close()
     for _ in range(num_workers):
         input_queue.put(None)
 
-    return num_generations, num_send
+    return num_generations, num_generations
 
 def main():
     """
@@ -539,6 +556,7 @@ def main():
     parser.add_argument('--out-folder', type=str, default=None, help='Path to the output folder.')
     parser.add_argument('--debug-max', type=int, default=None, help='Maximum number of samples to process for debugging.')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with additional output.')
+    parser.add_argument('--max-samples', type=int, default=None, help='Maximum number of dataset samples to evaluate.')
     parser.add_argument('--add-composition', action='store_true', help='Include composition in the prompt.')
     parser.add_argument('--add-spacegroup', action='store_true', help='Include spacegroup in the prompt.')
     parser.add_argument('--max-new-tokens', type=int, default=1000, help='Maximum number of new tokens to generate.')
@@ -637,6 +655,7 @@ def main():
         eval_files_dir=eval_files_dir,
         num_workers=args.num_workers,
         debug_max=args.debug_max,
+        max_samples=args.max_samples,
         debug=args.debug,
         add_composition=args.add_composition,
         add_spacegroup=args.add_spacegroup,
