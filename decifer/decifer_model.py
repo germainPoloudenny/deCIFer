@@ -412,8 +412,8 @@ class Decifer(nn.Module):
         # Forward pass through transformer blocks
         self.attn_scores = []
         for i, block in enumerate(self.transformer.h):
-            x, att = block(x, attention_bias=attention_bias, return_attn=True)
-            self.attn_scores.append(att.detach().cpu().mean(dim=1))
+            x = block(x, attention_bias=attention_bias, return_attn=False)
+            #self.attn_scores.append(att.detach().cpu().mean(dim=1))
 
         x = self.transformer.ln_f(x)
 
