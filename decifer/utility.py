@@ -122,22 +122,31 @@ def discrete_to_continuous_xrd(
         - The function applies pseudo-Voigt broadening to the input peaks and adds random noise.
         - Peak intensities are normalized, and negative values are clipped to zero.
     """
+    device = batch_q.device
+    if not torch.is_floating_point(batch_q):
+        batch_q = batch_q.to(device=device, dtype=torch.float32)
+    else:
+        batch_q = batch_q.to(device=device)
+    batch_iq = batch_iq.to(device=device, dtype=batch_q.dtype)
+    dtype = batch_q.dtype
+
     # Generate q_cont based on qmin, qmax, and qstep
-    q_cont = torch.arange(qmin, qmax, qstep)  # Shape: (num_q_points,)
+    q_cont = torch.arange(qmin, qmax, qstep, device=device, dtype=dtype)  # Shape: (num_q_points,)
     batch_size = batch_q.shape[0]
     num_q_points = q_cont.shape[0]
 
     # Sample random FWHM, eta, noise, and intensity scale values for each sample
-    fwhm = torch.empty(batch_size, 1, 1).uniform_(*fwhm_range)  # Shape: (batch_size, 1, 1)
-    eta = torch.empty(batch_size, 1, 1).uniform_(*eta_range)    # Shape: (batch_size, 1, 1)
+    fwhm = torch.empty(batch_size, 1, 1, device=device, dtype=dtype).uniform_(*fwhm_range)  # Shape: (batch_size, 1, 1)
+    eta = torch.empty(batch_size, 1, 1, device=device, dtype=dtype).uniform_(*eta_range)    # Shape: (batch_size, 1, 1)
 
     # Apply intensity scaling to peak intensities
     if intensity_scale_range is not None:
-        intensity_scale = torch.empty(batch_size, 1).uniform_(*intensity_scale_range)  # Shape: (batch_size, 1)
+        intensity_scale = torch.empty(batch_size, 1, device=device, dtype=batch_iq.dtype).uniform_(*intensity_scale_range)  # Shape: (batch_size, 1)
         batch_iq = batch_iq * intensity_scale
 
     # Convert FWHM to standard deviations
-    sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(torch.tensor(2.0))))
+    two = torch.tensor(2.0, device=device, dtype=dtype)
+    sigma_gauss = fwhm / (2 * torch.sqrt(2 * torch.log(two)))
     gamma_lorentz = fwhm / 2
 
     # Expand dimensions for broadcasting
@@ -160,15 +169,15 @@ def discrete_to_continuous_xrd(
 
     # Add random noise
     if noise_range is not None:
-        noise_scale = torch.empty(batch_size, 1).uniform_(*noise_range)  # Shape: (batch_size, 1)
-        noise = torch.randn(batch_size, num_q_points) * noise_scale
+        noise_scale = torch.empty(batch_size, 1, device=device, dtype=batch_iq.dtype).uniform_(*noise_range)  # Shape: (batch_size, 1)
+        noise = torch.randn(batch_size, num_q_points, device=device, dtype=batch_iq.dtype) * noise_scale
         iq_cont += noise
 
     # Apply random masking
     if mask_prob is not None:
-        mask = (torch.rand(batch_size, num_q_points) > mask_prob).float()
+        mask = (torch.rand(batch_size, num_q_points, device=device, dtype=batch_iq.dtype) > mask_prob).float()
         iq_cont *= mask
-    
+
     # Clip to ensure non-negative intensities
     iq_cont = torch.clamp(iq_cont, min=0.0)
 
@@ -884,4 +893,3 @@ def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=No
 
     # Show the plot
     plt.show()
-

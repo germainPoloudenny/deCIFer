@@ -137,6 +137,8 @@ class TrainConfig:
     # PXRD embedder
     condition: bool = False
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
+    precompute_conditioning: bool = False
+    precompute_conditioning_batch_size: int = 512
 
     # Augmentation at training time
     qmin: float = 0.0
@@ -247,10 +249,30 @@ def setup_datasets(C, distributed=False):
     # Collect relevant data
     dataset_fields = ["cif_tokens", "xrd.q", "xrd.iq"]
 
-    # Initialise datasets/loaders 
-    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields)
-    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields)
-    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields)
+    dataset_kwargs = {}
+    if getattr(C, "condition", False) and getattr(C, "precompute_conditioning", False):
+        conditioning_kwargs = {
+            'qmin': C.qmin,
+            'qmax': C.qmax,
+            'qstep': C.qstep,
+            'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
+            'eta_range': (C.eta_range_min, C.eta_range_max),
+            'noise_range': (C.noise_range_min, C.noise_range_max),
+            'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
+            'mask_prob': C.mask_prob,
+        }
+        dataset_kwargs.update(
+            {
+                'precompute_conditioning': True,
+                'conditioning_kwargs': conditioning_kwargs,
+                'precompute_batch_size': getattr(C, 'precompute_conditioning_batch_size', 512),
+            }
+        )
+
+    # Initialise datasets/loaders
+    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields, **dataset_kwargs)
+    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields, **dataset_kwargs)
+    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields, **dataset_kwargs)
 
     dataset_fraction = float(getattr(C, "dataset_fraction", 1.0))
     if not (0.0 < dataset_fraction <= 1.0):
@@ -479,6 +501,16 @@ if __name__ == "__main__":
             data_iters[split] = iter(dataloader)
         data_iter = data_iters[split]
 
+        def _resolve_dataset_attr(dataset, attr, default=None):
+            current_dataset = dataset
+            while isinstance(current_dataset, Subset):
+                current_dataset = current_dataset.dataset
+            return getattr(current_dataset, attr, default)
+
+        has_precomputed_conditioning = bool(
+            _resolve_dataset_attr(dataloader.dataset, "has_precomputed_conditioning", False)
+        )
+
         # Initialize lists to store packed sequences and start indices
         start_indices_list = []
         cond_list = []
@@ -507,7 +539,16 @@ if __name__ == "__main__":
 
             # Fetch conditioning and augment to cont signals
             if C.condition:
-                cond_list.extend(discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq'])
+                if has_precomputed_conditioning and 'xrd_cont' in batch:
+                    cond_entries = batch['xrd_cont']
+                    if isinstance(cond_entries, torch.Tensor):
+                        cond_list.extend(cond_entries)
+                    else:
+                        cond_list.extend(list(cond_entries))
+                else:
+                    cond_list.extend(
+                        discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
+                    )
 
         if not total_sequences:
             raise RuntimeError("Failed to collect any sequences for batching.")
@@ -544,7 +585,16 @@ if __name__ == "__main__":
                 total_sequences.extend(sequences)
                 total_token_count += sum(int(seq.numel()) for seq in sequences)
                 if C.condition:
-                    cond_list.extend(discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq'])
+                    if has_precomputed_conditioning and 'xrd_cont' in batch:
+                        cond_entries = batch['xrd_cont']
+                        if isinstance(cond_entries, torch.Tensor):
+                            cond_list.extend(cond_entries)
+                        else:
+                            cond_list.extend(list(cond_entries))
+                    else:
+                        cond_list.extend(
+                            discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
+                        )
                 continue
 
             # Final fallback: repeat collected sequences to satisfy the required block size
