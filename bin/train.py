@@ -226,7 +226,7 @@ def parse_config():
 
     return C
 
-def setup_datasets(C, distributed=False):
+def setup_datasets(C, distributed=False, show_progress=True):
     
     # Custom collate function
     def collate_fn(batch):
@@ -266,13 +266,32 @@ def setup_datasets(C, distributed=False):
                 'precompute_conditioning': True,
                 'conditioning_kwargs': conditioning_kwargs,
                 'precompute_batch_size': getattr(C, 'precompute_conditioning_batch_size', 512),
+                'conditioning_device': C.device,
             }
         )
 
     # Initialise datasets/loaders
-    train_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/train.h5"), dataset_fields, **dataset_kwargs)
-    val_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/val.h5"), dataset_fields, **dataset_kwargs)
-    test_dataset = DeciferDataset(os.path.join(C.dataset, "serialized/test.h5"), dataset_fields, **dataset_kwargs)
+    train_dataset = DeciferDataset(
+        os.path.join(C.dataset, "serialized/train.h5"),
+        dataset_fields,
+        progress_desc="train dataset",
+        show_progress=show_progress,
+        **dataset_kwargs,
+    )
+    val_dataset = DeciferDataset(
+        os.path.join(C.dataset, "serialized/val.h5"),
+        dataset_fields,
+        progress_desc="validation dataset",
+        show_progress=show_progress,
+        **dataset_kwargs,
+    )
+    test_dataset = DeciferDataset(
+        os.path.join(C.dataset, "serialized/test.h5"),
+        dataset_fields,
+        progress_desc="test dataset",
+        show_progress=show_progress,
+        **dataset_kwargs,
+    )
 
     dataset_fraction = float(getattr(C, "dataset_fraction", 1.0))
     if not (0.0 < dataset_fraction <= 1.0):
@@ -356,7 +375,7 @@ if __name__ == "__main__":
             print(f"TensorBoard logging to {C.tensorboard_log_dir}", flush=True)
 
     # Setup datasets
-    dataloaders, samplers = setup_datasets(C, distributed=use_distributed)
+    dataloaders, samplers = setup_datasets(C, distributed=use_distributed, show_progress=is_main_process)
     sampler_epochs = {split: 0 for split in dataloaders.keys()}
 
     # Augmentation kwargs
@@ -491,7 +510,7 @@ if __name__ == "__main__":
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
 
-    def get_batch(split):
+    def get_batch(split, *, show_progress=False):
 
         # Retrieve the dataloader and initialize the iterator
         dataloader = dataloaders[split]
@@ -520,6 +539,29 @@ if __name__ == "__main__":
         total_token_count = 0
         max_extra_fetches = 5
         extra_fetches = 0
+        seq_progress = None
+        if show_progress and tqdm is not None:
+            seq_progress = tqdm(
+                total=C.batch_size,
+                desc=f"Preparing first {split} batch",
+                leave=False,
+            )
+        last_progress = -0.1
+
+        def report_progress():
+            nonlocal last_progress
+            if not show_progress:
+                return
+            seq_ratio = len(total_sequences) / max(1, C.batch_size)
+            token_ratio = total_token_count / max(1, C.block_size)
+            progress_ratio = min(1.0, max(seq_ratio, token_ratio))
+            if progress_ratio - last_progress >= 0.1 or progress_ratio >= 1.0:
+                print(
+                    f"[INFO] Collecting {split} batch: sequences {len(total_sequences)}/{C.batch_size}, "
+                    f"tokens {total_token_count}/{C.block_size}",
+                    flush=True,
+                )
+                last_progress = progress_ratio
         while total_token_count < C.block_size or len(total_sequences) < C.batch_size:
             try:
                 batch = next(data_iter)
@@ -536,6 +578,11 @@ if __name__ == "__main__":
             sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
             total_sequences.extend(sequences)
             total_token_count += sum(int(seq.numel()) for seq in sequences)
+            if seq_progress is not None:
+                update_amount = min(len(sequences), C.batch_size - seq_progress.n)
+                if update_amount > 0:
+                    seq_progress.update(update_amount)
+            report_progress()
 
             # Fetch conditioning and augment to cont signals
             if C.condition:
@@ -584,6 +631,11 @@ if __name__ == "__main__":
                 sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
                 total_sequences.extend(sequences)
                 total_token_count += sum(int(seq.numel()) for seq in sequences)
+                if seq_progress is not None:
+                    update_amount = min(len(sequences), C.batch_size - seq_progress.n)
+                    if update_amount > 0:
+                        seq_progress.update(update_amount)
+                report_progress()
                 if C.condition:
                     if has_precomputed_conditioning and 'xrd_cont' in batch:
                         cond_entries = batch['xrd_cont']
@@ -620,6 +672,11 @@ if __name__ == "__main__":
 
         # With a sufficient number of tokens, pack sequences into batches without explicit loops
         all_tokens = torch.cat(total_sequences)
+
+        if seq_progress is not None:
+            seq_progress.close()
+
+        report_progress()
 
         # Compute the lengths of sequences
         seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
@@ -734,7 +791,11 @@ if __name__ == "__main__":
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return C.min_lr + coeff * (C.learning_rate - C.min_lr)
 
-    X, Y, cond, start_indices = get_batch("train")
+    if is_main_process:
+        print("Preparing first training batch (may take a moment)...", flush=True)
+    X, Y, cond, start_indices = get_batch("train", show_progress=is_main_process)
+    if is_main_process:
+        print("First training batch ready.", flush=True)
     t0 = time.time()
     local_iteration_number = 0
     stop_training = False
