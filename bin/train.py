@@ -30,6 +30,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from dataclasses import dataclass, field
 from contextlib import nullcontext
+from collections import deque
 from tqdm.auto import tqdm
 
 from omegaconf import OmegaConf
@@ -510,6 +511,8 @@ if __name__ == "__main__":
     # Initialize a dictionary to keep data iterators per split
     data_iters = {}
 
+    state_queues = {split_name: deque() for split_name in dataloaders.keys()}
+
     def get_batch(split, *, show_progress=False):
 
         # Retrieve the dataloader and initialize the iterator
@@ -519,6 +522,7 @@ if __name__ == "__main__":
                 samplers[split].set_epoch(sampler_epochs[split])
             data_iters[split] = iter(dataloader)
         data_iter = data_iters[split]
+        state_queue = state_queues[split]
 
         def _resolve_dataset_attr(dataset, attr, default=None):
             current_dataset = dataset
@@ -530,93 +534,26 @@ if __name__ == "__main__":
             _resolve_dataset_attr(dataloader.dataset, "has_precomputed_conditioning", False)
         )
 
-        # Initialize lists to store packed sequences and start indices
-        start_indices_list = []
-        cond_list = []
+        window_size = C.block_size
+        stride = C.block_size
+        terminator = torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)
 
-        # Collect sequences until we have enough tokens to form at least one full block
-        total_sequences = []
-        total_token_count = 0
-        max_extra_fetches = 5
-        extra_fetches = 0
-        seq_progress = None
-        if show_progress and tqdm is not None:
-            seq_progress = tqdm(
-                total=C.batch_size,
-                desc=f"Preparing first {split} batch",
-                leave=False,
-            )
-        last_progress = -0.1
+        def _prepare_conditioning(batch):
+            if not C.condition:
+                return [None] * len(batch['cif_tokens'])
 
-        def report_progress():
-            nonlocal last_progress
-            if not show_progress:
-                return
-            seq_ratio = len(total_sequences) / max(1, C.batch_size)
-            token_ratio = total_token_count / max(1, C.block_size)
-            progress_ratio = min(1.0, max(seq_ratio, token_ratio))
-            if progress_ratio - last_progress >= 0.1 or progress_ratio >= 1.0:
-                print(
-                    f"[INFO] Collecting {split} batch: sequences {len(total_sequences)}/{C.batch_size}, "
-                    f"tokens {total_token_count}/{C.block_size}",
-                    flush=True,
-                )
-                last_progress = progress_ratio
-        while total_token_count < C.block_size or len(total_sequences) < C.batch_size:
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                sampler_epochs[split] += 1
-                if samplers.get(split) is not None and hasattr(samplers[split], "set_epoch"):
-                    samplers[split].set_epoch(sampler_epochs[split])
-                data_iter = iter(dataloader)
-                data_iters[split] = data_iter
-                batch = next(data_iter)
+            if has_precomputed_conditioning and 'xrd_cont' in batch:
+                cond_entries = batch['xrd_cont']
+                if isinstance(cond_entries, torch.Tensor):
+                    return [cond_entries[i].clone() for i in range(cond_entries.size(0))]
+                return [entry.clone() if isinstance(entry, torch.Tensor) else entry for entry in cond_entries]
 
-            # Fetch sequences and remove padding tokens
-            sequences = batch['cif_tokens']
-            sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
-            total_sequences.extend(sequences)
-            total_token_count += sum(int(seq.numel()) for seq in sequences)
-            if seq_progress is not None:
-                update_amount = min(len(sequences), C.batch_size - seq_progress.n)
-                if update_amount > 0:
-                    seq_progress.update(update_amount)
-            report_progress()
+            result = discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)
+            return [tensor.clone() for tensor in result['iq']]
 
-            # Fetch conditioning and augment to cont signals
-            if C.condition:
-                if has_precomputed_conditioning and 'xrd_cont' in batch:
-                    cond_entries = batch['xrd_cont']
-                    if isinstance(cond_entries, torch.Tensor):
-                        cond_list.extend(cond_entries)
-                    else:
-                        cond_list.extend(list(cond_entries))
-                else:
-                    cond_list.extend(
-                        discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
-                    )
-
-        if not total_sequences:
-            raise RuntimeError("Failed to collect any sequences for batching.")
-
-        # Attempt to ensure we can form at least one complete block
-        while True:
-            if not total_sequences:
-                raise RuntimeError(f"Unable to collect tokens for split '{split}'.")
-
-            all_tokens = torch.cat(total_sequences)
-            if all_tokens.numel() == 0:
-                raise RuntimeError(f"Collected tensor for split '{split}' is empty; check dataset integrity.")
-
-            num_full_blocks = all_tokens.size(0) // C.block_size
-            num_batches = min(C.batch_size, num_full_blocks)
-
-            if num_batches > 0:
-                break
-
-            if extra_fetches < max_extra_fetches:
-                extra_fetches += 1
+        def _enqueue_states():
+            nonlocal data_iter
+            while len(state_queue) < C.batch_size:
                 try:
                     batch = next(data_iter)
                 except StopIteration:
@@ -627,119 +564,122 @@ if __name__ == "__main__":
                     data_iters[split] = data_iter
                     batch = next(data_iter)
 
-                sequences = batch['cif_tokens']
-                sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
-                total_sequences.extend(sequences)
-                total_token_count += sum(int(seq.numel()) for seq in sequences)
-                if seq_progress is not None:
-                    update_amount = min(len(sequences), C.batch_size - seq_progress.n)
-                    if update_amount > 0:
-                        seq_progress.update(update_amount)
-                report_progress()
-                if C.condition:
-                    if has_precomputed_conditioning and 'xrd_cont' in batch:
-                        cond_entries = batch['xrd_cont']
-                        if isinstance(cond_entries, torch.Tensor):
-                            cond_list.extend(cond_entries)
-                        else:
-                            cond_list.extend(list(cond_entries))
+                cond_entries = _prepare_conditioning(batch)
+                cif_batch = batch['cif_tokens']
+                for seq_tensor, cond_entry in zip(cif_batch, cond_entries):
+                    tokens = seq_tensor[seq_tensor != PADDING_ID]
+                    if tokens.numel() == 0:
+                        continue
+                    tokens = torch.cat([tokens, terminator])
+                    length = tokens.size(0)
+                    if length <= 1:
+                        continue
+                    if length > stride:
+                        max_offset = min(stride - 1, max(length - 2, 0))
+                        start_offset = random.randint(0, max_offset) if max_offset > 0 else 0
                     else:
-                        cond_list.extend(
-                            discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
-                        )
-                continue
+                        start_offset = 0
+                    state_queue.append({
+                        'tokens': tokens,
+                        'length': length,
+                        'position': start_offset,
+                        'start_offset': start_offset,
+                        'wrapped': False,
+                        'cond': cond_entry.clone() if isinstance(cond_entry, torch.Tensor) else cond_entry,
+                        'epoch_tag': sampler_epochs[split],
+                    })
 
-            # Final fallback: repeat collected sequences to satisfy the required block size
-            if is_main_process:
-                print(
-                    f"[WARN] {split}: insufficient tokens to form block_size={C.block_size} after {max_extra_fetches} extra fetches. "
-                    "Repeating collected sequences to proceed.",
-                    flush=True,
-                )
+                if len(state_queue) == 0:
+                    continue
 
-            tokens_available = all_tokens.size(0)
-            if tokens_available == 0:
-                raise RuntimeError(
-                    f"Unable to form a full block for split '{split}'; no tokens collected after retries."
-                )
+        def _next_window(state):
+            length = state['length']
 
-            repeat_factor = max(1, math.ceil(C.block_size / tokens_available))
-            total_sequences = total_sequences * repeat_factor
-            if C.condition and cond_list:
-                cond_list = cond_list * repeat_factor
-            total_token_count = sum(int(seq.numel()) for seq in total_sequences)
-            # Loop back to recompute using the expanded sequence list
+            while True:
+                start = state['position']
+                if state['wrapped'] and start >= state['start_offset']:
+                    return None
+                if start >= length:
+                    state['position'] = 0
+                    state['wrapped'] = True
+                    continue
+                break
 
-        # With a sufficient number of tokens, pack sequences into batches without explicit loops
-        all_tokens = torch.cat(total_sequences)
+            valid_len = min(window_size, max(length - start, 0))
+            window_tokens = state['tokens'][start:start + valid_len]
+            if window_tokens.size(0) < window_size:
+                pad_len = window_size - window_tokens.size(0)
+                padding = torch.full((pad_len,), PADDING_ID, dtype=torch.long)
+                window_tokens = torch.cat([window_tokens, padding], dim=0)
 
-        if seq_progress is not None:
-            seq_progress.close()
+            X = window_tokens[:-1].clone()
+            Y = window_tokens[1:].clone()
 
-        report_progress()
+            if valid_len < window_size:
+                cutoff = max(valid_len - 1, 0)
+                if cutoff < Y.size(0):
+                    Y[cutoff:] = -1
 
-        # Compute the lengths of sequences
-        seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
+            start_indices = (X == START_ID).nonzero(as_tuple=False).flatten()
 
-        # Compute cumulative lengths to find sequence boundaries
-        seq_cum_lengths = torch.cumsum(seq_lengths, dim=0)
+            state['position'] += stride
 
-        if num_batches == 0:
-            raise RuntimeError(
-                f"Unable to form a full block for split '{split}' even after retries; "
-                f"collected_tokens={all_tokens.size(0)}, block_size={C.block_size}."
-            )
+            temp_position = state['position']
+            temp_wrapped = state['wrapped']
+            has_more = True
+            while True:
+                if temp_wrapped and temp_position >= state['start_offset']:
+                    has_more = False
+                    break
+                if temp_position >= length:
+                    temp_position = 0
+                    temp_wrapped = True
+                    continue
+                break
 
-        # Truncate the tokens to fit into an integer number of blocks
-        total_tokens = all_tokens[:num_batches * C.block_size]
+            return X, Y, start_indices, has_more, state['cond']
 
-        # Reshape the tokens into (num_batches, block_size)
-        total_tokens = total_tokens.view(num_batches, C.block_size)
-
-        # Create input (X) and target (Y) sequences
-        X_batch = total_tokens[:, :-1]
-        Y_batch = total_tokens[:, 1:]
-
-        # Find start indices within each batch
-        start_token_mask = X_batch == START_ID
-        start_indices = start_token_mask.nonzero(as_tuple=False)
-
-        # Organize start indices per batch item
+        batch_X = []
+        batch_Y = []
         start_indices_list = []
-        for i in range(num_batches):
-            indices = start_indices[start_indices[:, 0] == i][:, 1]
-            start_indices_list.append(indices)
+        cond_accumulator = []
 
-        # Handle conditioning data if required
-        cond_batch = None
-        if C.condition:
-            tokens_used = num_batches * C.block_size
-            if tokens_used == 0:
-                raise RuntimeError("Conditioning requested but no tokens were allocated to the batch.")
+        for _ in range(C.batch_size):
+            _enqueue_states()
+            if not state_queue:
+                raise RuntimeError(f"Unable to assemble batch for split '{split}'; dataset may be empty.")
 
-            search_value = torch.tensor(tokens_used, device=seq_cum_lengths.device)
-            search_index = int(torch.searchsorted(seq_cum_lengths, search_value, right=False).item())
-            num_sequences_used = min(search_index + 1, len(cond_list))
+            while state_queue:
+                state = state_queue.popleft()
+                window = _next_window(state)
+                if window is None:
+                    continue
 
-            if num_sequences_used == 0:
-                raise RuntimeError(
-                    "Conditioning requested but no conditioning vectors were gathered;"
-                    " verify dataset annotations."
-                )
+                X, Y, start_indices, has_more, cond_entry = window
+                batch_X.append(X)
+                batch_Y.append(Y)
+                start_indices_list.append(start_indices)
 
-            cond_list = cond_list[:num_sequences_used]
-            cond_batch = torch.stack(cond_list)
+                if C.condition and cond_entry is not None and len(start_indices) > 0:
+                    repeat = len(start_indices)
+                    cond_tensor = cond_entry.clone() if isinstance(cond_entry, torch.Tensor) else cond_entry
+                    if isinstance(cond_tensor, torch.Tensor):
+                        cond_accumulator.append(cond_tensor.unsqueeze(0).repeat(repeat, 1))
+                    else:
+                        raise TypeError("Conditioning entry must be a tensor when conditioning is enabled.")
 
-            required_conditionals = sum(len(indices) for indices in start_indices_list)
-            if required_conditionals == 0:
-                cond_batch = None
+                if has_more:
+                    state_queue.append(state)
+                break
             else:
-                if cond_batch.size(0) < required_conditionals:
-                    raise RuntimeError(
-                        f"Conditioning vectors ({cond_batch.size(0)}) fewer than required insertions ({required_conditionals})."
-                    )
-                if cond_batch.size(0) > required_conditionals:
-                    cond_batch = cond_batch[:required_conditionals]
+                raise RuntimeError(f"Failed to generate window for split '{split}'; check data integrity.")
+
+        X_batch = torch.stack(batch_X, dim=0)
+        Y_batch = torch.stack(batch_Y, dim=0)
+
+        cond_batch = None
+        if cond_accumulator:
+            cond_batch = torch.cat(cond_accumulator, dim=0)
 
         # Send to device (CUDA/CPU)
         if device_type == "cuda" and torch.cuda.is_available():

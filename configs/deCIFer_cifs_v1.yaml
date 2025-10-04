@@ -19,7 +19,7 @@ tensorboard_log_dir: 'runs/deCIFer_cifs_v1_model/tensorboard'
 validate: True # validate with a validation set
 
 dataset: '../crystallography/data/structures/cifs_v1'
-batch_size: 64 # batch size
+batch_size: 128 # batch size
 block_size: 3076 # context window
 
 n_layer: 8 # n_layers
@@ -46,6 +46,6 @@ noise_range_max: 0.05 # max. for the uniform sampling of std. for additive noise
 condition: True # Enable conditioning (deCIFer)
 precompute_conditioning: True
 precompute_conditioning_batch_size: 16
-boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
+boundary_masking: False # Boundary masking no longer needed when batches avoid cross-CIF windows.
 
-dataset_fraction: 1
+dataset_fraction: 0.1

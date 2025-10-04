@@ -360,15 +360,19 @@ class Decifer(nn.Module):
             positions = positions_in_new_seq
             t = max_new_t
 
-            # Construct attention bias
-            start_mask = insert_mask.long()
-            group_ids = torch.cumsum(start_mask, dim=1)
-            causal_mask = positions.unsqueeze(2) >= positions.unsqueeze(1)
-            group_mask = group_ids.unsqueeze(2) == group_ids.unsqueeze(1)
-            attention_mask = causal_mask & group_mask
-            attention_bias = torch.where(attention_mask, torch.zeros(1, dtype=ptdtype, device=device), 
-                                         torch.full((1,), float('-inf'), dtype=ptdtype, device=device))
-            # attention_bias is (B, T, T)
+            if self.config.boundary_masking:
+                # Construct attention bias to keep groups isolated when concatenating multiple CIFs
+                start_mask = insert_mask.long()
+                group_ids = torch.cumsum(start_mask, dim=1)
+                causal_mask = positions.unsqueeze(2) >= positions.unsqueeze(1)
+                group_mask = group_ids.unsqueeze(2) == group_ids.unsqueeze(1)
+                attention_mask = causal_mask & group_mask
+                attention_bias = torch.where(
+                    attention_mask,
+                    torch.zeros(1, dtype=ptdtype, device=device),
+                    torch.full((1,), float('-inf'), dtype=ptdtype, device=device),
+                )
+                # attention_bias is (B, T, T)
 
             # Adjust targets if provided
             if targets is not None:
