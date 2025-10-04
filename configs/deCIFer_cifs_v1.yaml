@@ -21,6 +21,7 @@ validate: True # validate with a validation set
 dataset: '../crystallography/data/structures/cifs_v1'
 batch_size: 64 # batch size
 block_size: 3076 # context window
+num_workers_dataloader: 4 # enable multi-process data loading
 
 n_layer: 8 # n_layers
 n_head: 8 # n_head

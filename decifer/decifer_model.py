@@ -601,7 +601,10 @@ class Decifer(nn.Module):
         disable_pbar: bool = False,
         custom_cond_emb=None,
     ):
-        """Generate sequences with beam search.
+        """Generate sequences with stochastic beam search.
+
+        Expands each beam using multinomial sampling so the search remains non-deterministic
+        while still ranking candidates by accumulated log-probability.
 
         Args:
             idx (torch.Tensor): Prompt tensor of shape ``(batch_size, seq_len)``.
@@ -682,20 +685,36 @@ class Decifer(nn.Module):
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("Inf")
             log_probs = F.log_softmax(logits, dim=-1)
+            probs = log_probs.exp()
 
             candidates = [beam for beam in beams if beam.finished]
 
             for local_idx, beam_idx in enumerate(active_indices):
                 state = beams[beam_idx]
-                token_log_probs = log_probs[local_idx]
-                candidates_per_beam = min(beam_size, token_log_probs.size(0))
-                if top_k is not None:
-                    candidates_per_beam = min(candidates_per_beam, top_k)
-                top_scores, top_tokens = torch.topk(token_log_probs, candidates_per_beam)
+                token_probs = probs[local_idx]
+                positive_mask = token_probs > 0
+                available = int(positive_mask.sum().item())
 
-                for log_prob, token in zip(top_scores, top_tokens):
+                if available == 0:
+                    token_probs = torch.full_like(token_probs, 1.0 / token_probs.size(0))
+                    token_log_probs = torch.log(token_probs)
+                    available = token_probs.size(0)
+                else:
+                    token_log_probs = log_probs[local_idx]
+
+                candidates_per_beam = min(beam_size, available)
+                if candidates_per_beam == 0:
+                    continue
+
+                sampled_tokens = torch.multinomial(
+                    token_probs,
+                    num_samples=candidates_per_beam,
+                    replacement=False,
+                )
+
+                for token in sampled_tokens:
                     token_id = int(token.item())
-                    log_prob_value = float(log_prob.item())
+                    log_prob_value = float(token_log_probs[token_id].item())
                     token_tensor = torch.tensor([[token_id]], device=device, dtype=state.seq.dtype)
                     new_seq = torch.cat((state.seq, token_tensor), dim=1)
                     new_score = state.score + log_prob_value

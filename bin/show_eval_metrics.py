@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "récursivement. Lorsque aucun chemin n'est fourni, le script cherche "
             "automatiquement dans `slurm/`."
         ),
-        default=["runs/deCIFer_cifs_v1_model/eval_classique/cifs_v1.pkl.gz"]
+        default=["runs/deCIFer_cifs_v1_model/eval_bsm/cifs_v1.pkl.gz"]
     )
 
     args = parser.parse_args(argv)

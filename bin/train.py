@@ -314,17 +314,51 @@ def setup_datasets(C, distributed=False, show_progress=True):
     else:
         train_sampler = SubsetRandomSampler(range(len(train_dataset)))
     train_batch_sampler = RandomBatchSampler(train_sampler, batch_size=C.batch_size, drop_last=False)
-    train_dataloader = DataLoader(train_dataset, batch_sampler=train_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
-    
+    pin_memory = torch.cuda.is_available() and str(C.device).startswith("cuda")
+    loader_kwargs = {
+        "batch_sampler": train_batch_sampler,
+        "num_workers": C.num_workers_dataloader,
+        "collate_fn": collate_fn,
+        "pin_memory": pin_memory,
+    }
+    if C.num_workers_dataloader > 0:
+        loader_kwargs.update({
+            "persistent_workers": True,
+            "prefetch_factor": 2,
+        })
+    train_dataloader = DataLoader(train_dataset, **loader_kwargs)
+
     # Random batching sampler, val
     val_sampler = SubsetRandomSampler(range(len(val_dataset)))
     val_batch_sampler = RandomBatchSampler(val_sampler, batch_size=C.batch_size, drop_last=False)
-    val_dataloader = DataLoader(val_dataset, batch_sampler=val_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
-    
+    val_loader_kwargs = {
+        "batch_sampler": val_batch_sampler,
+        "num_workers": C.num_workers_dataloader,
+        "collate_fn": collate_fn,
+        "pin_memory": pin_memory,
+    }
+    if C.num_workers_dataloader > 0:
+        val_loader_kwargs.update({
+            "persistent_workers": True,
+            "prefetch_factor": 2,
+        })
+    val_dataloader = DataLoader(val_dataset, **val_loader_kwargs)
+
     # Random batching sampler, test
     test_sampler = SubsetRandomSampler(range(len(test_dataset)))
     test_batch_sampler = RandomBatchSampler(test_sampler, batch_size=C.batch_size, drop_last=False)
-    test_dataloader = DataLoader(test_dataset, batch_sampler=test_batch_sampler, num_workers=C.num_workers_dataloader, collate_fn=collate_fn)
+    test_loader_kwargs = {
+        "batch_sampler": test_batch_sampler,
+        "num_workers": C.num_workers_dataloader,
+        "collate_fn": collate_fn,
+        "pin_memory": pin_memory,
+    }
+    if C.num_workers_dataloader > 0:
+        test_loader_kwargs.update({
+            "persistent_workers": True,
+            "prefetch_factor": 2,
+        })
+    test_dataloader = DataLoader(test_dataset, **test_loader_kwargs)
 
     # Combine loaders for easy access
     dataloaders = {
