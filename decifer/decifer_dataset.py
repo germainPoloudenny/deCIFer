@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-from typing import Dict, List, Optional, Union
-
+import json
 import math
+import os
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
 import h5py
 import torch
@@ -18,6 +20,8 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 class DeciferDataset(Dataset):
+
+    _CACHE_VERSION = 1
 
     @staticmethod
     def _slice_to_numpy(data_slice, dtype: np.dtype) -> np.ndarray:
@@ -47,6 +51,7 @@ class DeciferDataset(Dataset):
         conditioning_device: Optional[Union[str, torch.device]] = None,
         progress_desc: Optional[str] = None,
         show_progress: bool = True,
+        conditioning_cache_path: Optional[Union[str, os.PathLike]] = None,
     ):
         # Key mappings for backward compatibility
         KEY_MAPPINGS = {
@@ -79,6 +84,8 @@ class DeciferDataset(Dataset):
 
         self.precompute_conditioning = precompute_conditioning
         self.conditioning_kwargs = conditioning_kwargs or {}
+        self._conditioning_kwargs_json = json.dumps(self.conditioning_kwargs, sort_keys=True)
+        self._h5_path = os.path.abspath(h5_path)
         if conditioning_device is not None:
             device = torch.device(conditioning_device)
             if device.type == 'cuda' and not torch.cuda.is_available():
@@ -91,15 +98,28 @@ class DeciferDataset(Dataset):
         self._conditioning_cache: Optional[torch.Tensor] = None
         self._progress_desc = progress_desc
         self._show_progress = show_progress
+        self._conditioning_cache_path = (
+            Path(conditioning_cache_path) if conditioning_cache_path is not None else None
+        )
 
         if self.precompute_conditioning:
-            if self._show_progress and self._progress_desc:
-                print(
-                    f"[INFO] Precomputing conditioning cache for {self._progress_desc} "
-                    f"({self.dataset_length} samples)...",
-                    flush=True,
-                )
-            self._build_conditioning_cache()
+            cache_loaded = self._try_load_conditioning_cache()
+            if cache_loaded:
+                if self._show_progress and self._progress_desc:
+                    print(
+                        f"[INFO] Loaded conditioning cache for {self._progress_desc} "
+                        f"({self.dataset_length} samples).",
+                        flush=True,
+                    )
+            else:
+                if self._show_progress and self._progress_desc:
+                    print(
+                        f"[INFO] Precomputing conditioning cache for {self._progress_desc} "
+                        f"({self.dataset_length} samples)...",
+                        flush=True,
+                    )
+                self._build_conditioning_cache()
+                self._save_conditioning_cache()
 
     def __len__(self):
         return self.dataset_length
@@ -177,3 +197,98 @@ class DeciferDataset(Dataset):
             raise RuntimeError("Failed to precompute conditioning cache; dataset appears to be empty.")
 
         self._conditioning_cache = torch.cat(cache, dim=0)
+
+    def _cache_metadata(self) -> Dict[str, Union[int, str]]:
+        return {
+            'version': self._CACHE_VERSION,
+            'dataset_length': self.dataset_length,
+            'conditioning_kwargs_json': self._conditioning_kwargs_json,
+            'dataset_path': self._h5_path,
+        }
+
+    def _try_load_conditioning_cache(self) -> bool:
+        if self._conditioning_cache_path is None:
+            return False
+
+        path = self._conditioning_cache_path
+        if not path.exists():
+            return False
+
+        try:
+            payload = torch.load(path, map_location='cpu')
+        except Exception as exc:  # pragma: no cover - best effort logging
+            print(f"[WARN] Failed to load conditioning cache from {path}: {exc}", flush=True)
+            return False
+
+        if isinstance(payload, torch.Tensor):
+            tensor = payload
+            meta = {}
+        elif isinstance(payload, dict):
+            tensor = payload.get('iq')
+            meta = payload.get('meta', {})
+        else:
+            print(f"[WARN] Unexpected payload type in conditioning cache: {type(payload)}", flush=True)
+            return False
+
+        if tensor is None or not isinstance(tensor, torch.Tensor):
+            print("[WARN] Conditioning cache is missing tensor data; ignoring.", flush=True)
+            return False
+
+        if tensor.shape[0] != self.dataset_length:
+            print(
+                f"[WARN] Conditioning cache length mismatch (expected {self.dataset_length}, got {tensor.shape[0]}).",
+                flush=True,
+            )
+            return False
+
+        meta_version = meta.get('version')
+        if meta_version is not None and meta_version != self._CACHE_VERSION:
+            print(f"[WARN] Conditioning cache version mismatch (found {meta_version}).", flush=True)
+            return False
+
+        cached_kwargs = meta.get('conditioning_kwargs_json')
+        if cached_kwargs is not None and cached_kwargs != self._conditioning_kwargs_json:
+            print("[WARN] Conditioning cache parameters differ from current configuration; recomputing.", flush=True)
+            return False
+
+        cached_dataset_path = meta.get('dataset_path')
+        if cached_dataset_path is not None and cached_dataset_path != self._h5_path:
+            print("[WARN] Conditioning cache dataset path mismatch; recomputing.", flush=True)
+            return False
+
+        self._conditioning_cache = tensor
+        return True
+
+    def _save_conditioning_cache(self) -> None:
+        if self._conditioning_cache_path is None or self._conditioning_cache is None:
+            return
+
+        path = self._conditioning_cache_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # pragma: no cover - best effort logging
+            print(f"[WARN] Unable to create conditioning cache directory {path.parent}: {exc}", flush=True)
+            return
+
+        payload = {
+            'iq': self._conditioning_cache,
+            'meta': self._cache_metadata(),
+        }
+        tmp_path = path.with_suffix(path.suffix + '.tmp')
+        try:
+            torch.save(payload, tmp_path)
+            tmp_path.replace(path)
+        except Exception as exc:  # pragma: no cover - best effort logging
+            print(f"[WARN] Failed to write conditioning cache to {path}: {exc}", flush=True)
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            return
+
+        if self._show_progress and self._progress_desc:
+            print(
+                f"[INFO] Saved conditioning cache for {self._progress_desc} to {path}",
+                flush=True,
+            )

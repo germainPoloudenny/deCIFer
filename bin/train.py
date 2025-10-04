@@ -6,6 +6,8 @@ nanoGPT: https://github.com/karpathy/nanoGPT/blob/eba36e84649f3c6d840a93092cb779
 CrystaLLM: https://github.com/lantunes/CrystaLLM/blob/main/bin/train.py
 """
 import os
+import hashlib
+import json
 import copy
 import math
 import time
@@ -139,6 +141,7 @@ class TrainConfig:
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
     precompute_conditioning: bool = False
     precompute_conditioning_batch_size: int = 512
+    conditioning_cache_dir: Optional[str] = None
 
     # Augmentation at training time
     qmin: float = 0.0
@@ -250,6 +253,11 @@ def setup_datasets(C, distributed=False, show_progress=True):
     dataset_fields = ["cif_tokens", "xrd.q", "xrd.iq"]
 
     dataset_kwargs = {}
+    cache_dir: Optional[str] = None
+
+    def cache_path_for(split_name: str, h5_path: str) -> Optional[str]:
+        return None
+
     if getattr(C, "condition", False) and getattr(C, "precompute_conditioning", False):
         conditioning_kwargs = {
             'qmin': C.qmin,
@@ -270,26 +278,52 @@ def setup_datasets(C, distributed=False, show_progress=True):
             }
         )
 
+        cache_dir = getattr(C, 'conditioning_cache_dir', None)
+        if cache_dir is None:
+            cache_dir = os.path.join(C.out_dir, "conditioning_cache")
+        cache_dir = os.path.abspath(cache_dir)
+        os.makedirs(cache_dir, exist_ok=True)
+
+        cache_version = getattr(DeciferDataset, '_CACHE_VERSION', 1)
+
+        def cache_path_for(split_name: str, h5_path: str) -> Optional[str]:
+            key_data = {
+                'split': split_name,
+                'dataset_path': os.path.abspath(h5_path),
+                'conditioning_kwargs': conditioning_kwargs,
+                'version': cache_version,
+            }
+            key_json = json.dumps(key_data, sort_keys=True)
+            digest = hashlib.sha1(key_json.encode('utf-8')).hexdigest()[:12]
+            return os.path.join(cache_dir, f"{split_name}_{digest}.pt")
+
     # Initialise datasets/loaders
+    train_h5 = os.path.join(C.dataset, "serialized/train.h5")
+    val_h5 = os.path.join(C.dataset, "serialized/val.h5")
+    test_h5 = os.path.join(C.dataset, "serialized/test.h5")
+
     train_dataset = DeciferDataset(
-        os.path.join(C.dataset, "serialized/train.h5"),
+        train_h5,
         dataset_fields,
         progress_desc="train dataset",
         show_progress=show_progress,
+        conditioning_cache_path=cache_path_for("train", train_h5),
         **dataset_kwargs,
     )
     val_dataset = DeciferDataset(
-        os.path.join(C.dataset, "serialized/val.h5"),
+        val_h5,
         dataset_fields,
         progress_desc="validation dataset",
         show_progress=show_progress,
+        conditioning_cache_path=cache_path_for("validation", val_h5),
         **dataset_kwargs,
     )
     test_dataset = DeciferDataset(
-        os.path.join(C.dataset, "serialized/test.h5"),
+        test_h5,
         dataset_fields,
         progress_desc="test dataset",
         show_progress=show_progress,
+        conditioning_cache_path=cache_path_for("test", test_h5),
         **dataset_kwargs,
     )
 
