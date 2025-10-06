@@ -600,11 +600,14 @@ class Decifer(nn.Module):
         length_penalty: float = 1.0,
         disable_pbar: bool = False,
         custom_cond_emb=None,
+        deterministic: bool = False,
     ):
-        """Generate sequences with stochastic beam search.
+        """Generate sequences with beam search.
 
-        Expands each beam using multinomial sampling so the search remains non-deterministic
-        while still ranking candidates by accumulated log-probability.
+        By default the search expands each beam using multinomial sampling so trajectories
+        remain non-deterministic while still ranking candidates by accumulated log-probability.
+        Setting ``deterministic=True`` switches to a classic beam search that always keeps the
+        highest probability continuations at every step.
 
         Args:
             idx (torch.Tensor): Prompt tensor of shape ``(batch_size, seq_len)``.
@@ -617,6 +620,7 @@ class Decifer(nn.Module):
             length_penalty (float): Length penalty applied when ranking beams.
             disable_pbar (bool): Disable progress bar.
             custom_cond_emb (Optional[torch.Tensor]): Custom conditioning embeddings.
+            deterministic (bool): If ``True`` choose the highest probability continuations per beam.
 
         Returns:
             torch.Tensor: Generated sequences (``beam_size`` x ``seq_len``) padded with ``Tokenizer().padding_id``.
@@ -706,11 +710,17 @@ class Decifer(nn.Module):
                 if candidates_per_beam == 0:
                     continue
 
-                sampled_tokens = torch.multinomial(
-                    token_probs,
-                    num_samples=candidates_per_beam,
-                    replacement=False,
-                )
+                if deterministic:
+                    sampled_tokens = torch.topk(
+                        token_log_probs,
+                        k=candidates_per_beam,
+                    ).indices
+                else:
+                    sampled_tokens = torch.multinomial(
+                        token_probs,
+                        num_samples=candidates_per_beam,
+                        replacement=False,
+                    )
 
                 for token in sampled_tokens:
                     token_id = int(token.item())

@@ -409,6 +409,7 @@ def process_dataset(
     debug: bool = False,
     beam_size: int = 1,
     length_penalty: float = 1.0,
+    beam_deterministic: bool = False,
 ) -> Tuple[int, int]:
     """
     Processes a dataset for evaluation by generating tasks for model inference.
@@ -435,6 +436,7 @@ def process_dataset(
         debug (bool): Enable debug mode. Defaults to False.
         beam_size (int): Beam width for beam search generation. Defaults to 1 (disabled).
         length_penalty (float): Length penalty applied when ranking beam search candidates. Defaults to 1.0.
+        beam_deterministic (bool): Use classic (deterministic) beam search expansions. Defaults to False.
 
     Returns:
         Tuple[int, int]: Number of generations processed and number of tasks sent.
@@ -485,6 +487,7 @@ def process_dataset(
                         top_k=top_k,
                         length_penalty=length_penalty,
                         disable_pbar=True,
+                        deterministic=beam_deterministic,
                     )
                 else:
                     cif_token_gen_tensor = model.generate_batched_reps(
@@ -596,6 +599,7 @@ def main():
     parser.add_argument('--top-k', type=int, default=None, help='')
     parser.add_argument('--beam-size', type=int, default=1, help='Beam width for beam search generation.')
     parser.add_argument('--length-penalty', type=float, default=1.0, help='Length penalty applied during beam search ranking.')
+    parser.add_argument('--beam-deterministic', action='store_true', help='Use deterministic beam search (keep top continuations instead of sampling).')
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
     parser.add_argument('--default_fwhm', type=float, default=0.05, help='')
@@ -698,6 +702,7 @@ def main():
         top_k=args.top_k,
         beam_size=args.beam_size,
         length_penalty=args.length_penalty,
+        beam_deterministic=args.beam_deterministic,
     )
 
     if num_send > 0:

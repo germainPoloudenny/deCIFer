@@ -108,7 +108,7 @@ def process_file(file_path):
         print(f"Error processing file {file_path}: {e}")
         return None
 
-def process(folder, debug_max=None) -> pd.DataFrame:
+def process(folder, debug_max=None, top_k=None) -> pd.DataFrame:
     """Processes all files in the given folder using multiprocessing."""
     # Get list of files
     files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.pkl.gz')]
@@ -121,7 +121,12 @@ def process(folder, debug_max=None) -> pd.DataFrame:
 
     # Filter out None results and convert to DataFrame
     data_list = [res for res in results if res is not None]
-    return pd.DataFrame(data_list)
+    df = pd.DataFrame(data_list)
+
+    if top_k is not None and top_k > 0 and not df.empty:
+        df = df.sort_values(by='rwp', ascending=True).head(top_k)
+
+    return df
 
 if __name__ == "__main__":
 
@@ -129,9 +134,12 @@ if __name__ == "__main__":
     parser.add_argument("--eval-folder-paths", nargs='+', required=True, help="Provide a list of folder paths")
     parser.add_argument("--output-folder", type=str, default='.')
     parser.add_argument("--debug_max", type=int, default=0)
+    parser.add_argument("--top-k", type=int, default=0, help="Keep only the top-K rows with the lowest Rwp (0 disables the filter)")
     args = parser.parse_args()
     if args.debug_max == 0:
         args.debug_max = None
+
+    top_k = args.top_k if args.top_k > 0 else None
     
     # Create output folder
     os.makedirs(args.output_folder, exist_ok=True)
@@ -139,6 +147,6 @@ if __name__ == "__main__":
     # Loop over folders
     folder_names = [path.split("/")[-1] for path in args.eval_folder_paths]
     for label, path in zip(folder_names, args.eval_folder_paths):
-        df = process(path, args.debug_max)
+        df = process(path, args.debug_max, top_k)
         pickle_path = os.path.join(args.output_folder, label + '.pkl.gz')
         df.to_pickle(pickle_path)
