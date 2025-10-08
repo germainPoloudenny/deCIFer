@@ -166,7 +166,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         default=["runs/deCIFer_cifs_v1_model/eval_bsm/cifs_v1.pkl.gz"]
     )
-
     args = parser.parse_args(argv)
 
     try:
@@ -186,7 +185,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(_spacegroup_match_rate(frame))
 
-    for label, column in ("RMSD", "rmsd"), ("Rwp", "rwp"), ("Wd", "wd"):
+    for label, column in (
+        ("RMSD", "rmsd"),
+        ("Rwp", "rwp"),
+        ("L2 distance", "l2_distance"),
+        ("Wd", "wd"),
+    ):
         if column not in frame.columns:
             print(f"ℹ️  {label}: colonne manquante")
             continue

@@ -60,6 +60,11 @@ def process_file(file_path):
         # Rwp
         rwp_value = rwp(xrd_iq_continuous_sample, xrd_iq_continuous_gen)
 
+        # L2 distance between continuous diffractograms
+        l2_distance = float(np.linalg.norm(
+            np.asarray(xrd_iq_continuous_sample) - np.asarray(xrd_iq_continuous_gen)
+        ))
+
         # RMSD
         rmsd_value = row['rmsd']
 
@@ -78,6 +83,7 @@ def process_file(file_path):
 
         out_dict = {
             'rwp': rwp_value,
+            'l2_distance': l2_distance,
             'wd': wd_value,
             'rmsd': rmsd_value,
             'cif_sample': cif_sample,
@@ -108,7 +114,7 @@ def process_file(file_path):
         print(f"Error processing file {file_path}: {e}")
         return None
 
-def process(folder, debug_max=None, top_k=None) -> pd.DataFrame:
+def process(folder, debug_max=None, top_k=None, top_k_metric: str = "rwp") -> pd.DataFrame:
     """Processes all files in the given folder using multiprocessing."""
     # Get list of files
     files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.pkl.gz')]
@@ -124,7 +130,12 @@ def process(folder, debug_max=None, top_k=None) -> pd.DataFrame:
     df = pd.DataFrame(data_list)
 
     if top_k is not None and top_k > 0 and not df.empty:
-        df = df.sort_values(by='rwp', ascending=True).head(top_k)
+        metric_column = top_k_metric
+        if metric_column == "l2":
+            metric_column = "l2_distance"
+        if metric_column not in df.columns:
+            raise ValueError(f"Metric '{top_k_metric}' not available for sorting.")
+        df = df.sort_values(by=metric_column, ascending=True).head(top_k)
 
     return df
 
@@ -134,7 +145,13 @@ if __name__ == "__main__":
     parser.add_argument("--eval-folder-paths", nargs='+', required=True, help="Provide a list of folder paths")
     parser.add_argument("--output-folder", type=str, default='.')
     parser.add_argument("--debug_max", type=int, default=0)
-    parser.add_argument("--top-k", type=int, default=0, help="Keep only the top-K rows with the lowest Rwp (0 disables the filter)")
+    parser.add_argument("--top-k", type=int, default=0, help="Keep only the top-K rows with the lowest selected metric (0 disables the filter)")
+    parser.add_argument(
+        "--top-k-metric",
+        choices=["rwp", "l2"],
+        default="rwp",
+        help="Metric used to rank rows when applying --top-k.",
+    )
     args = parser.parse_args()
     if args.debug_max == 0:
         args.debug_max = None
@@ -147,6 +164,6 @@ if __name__ == "__main__":
     # Loop over folders
     folder_names = [path.split("/")[-1] for path in args.eval_folder_paths]
     for label, path in zip(folder_names, args.eval_folder_paths):
-        df = process(path, args.debug_max, top_k)
+        df = process(path, args.debug_max, top_k, args.top_k_metric)
         pickle_path = os.path.join(args.output_folder, label + '.pkl.gz')
         df.to_pickle(pickle_path)
