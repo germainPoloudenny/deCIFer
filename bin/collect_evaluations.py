@@ -169,4 +169,8 @@ if __name__ == "__main__":
         df = process(path, args.debug_max, top_k, args.top_k_metric)
         pickle_path = os.path.join(args.output_folder, label + '.pkl.gz')
         df.to_pickle(pickle_path)
+        # ``collect_evaluations`` n'applique pas de seuil sur le RMSD : les
+        # valeurs sont exportées telles quelles et ``show_metrics`` se contente
+        # de les résumer. Si un taux de "match" doit être calculé, il faut donc
+        # fournir un seuil explicite dans l'étape d'analyse suivante.
         show_metrics([pickle_path])

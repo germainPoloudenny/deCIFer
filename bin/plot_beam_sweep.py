@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import numbers
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -82,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Subset of metric names to plot; defaults to "
-            "validity_rate, rmsd_match_rate, spacegroup_match_rate, rwp_mean."
+            "validity_rate, rmsd_match_rate_overall, spacegroup_match_rate, rwp_mean."
         ),
     )
     parser.add_argument(
@@ -141,6 +142,18 @@ def gather_metrics(
             metrics = _collect_metrics(pickle_path, rmsd_threshold, rwp_threshold)
             record: Dict[str, object] = {"beam_size": beam_size, "variant": variant.label}
             record.update(metrics)
+
+            match_count = metrics.get("rmsd_match_count")
+            total_rows = metrics.get("num_rows")
+            if (
+                isinstance(match_count, numbers.Real)
+                and isinstance(total_rows, numbers.Real)
+                and total_rows
+            ):
+                record["rmsd_match_rate_overall"] = float(match_count) / float(total_rows)
+            else:
+                record["rmsd_match_rate_overall"] = float("nan")
+
             records.append(record)
     if not records:
         raise FileNotFoundError(
@@ -159,7 +172,7 @@ def _slugify_metric(name: str) -> str:
 def _select_metrics(frame: pd.DataFrame, requested: Optional[Iterable[str]]) -> List[str]:
     default_metrics = [
         "validity_rate",
-        "rmsd_match_rate",
+        "rmsd_match_rate_overall",
         "spacegroup_match_rate",
         "rwp_mean",
     ]

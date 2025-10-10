@@ -123,17 +123,24 @@ def _spacegroup_match_rate(frame: pd.DataFrame) -> str:
 
 def _describe_numeric(label: str, series: pd.Series) -> List[str]:
     numeric = pd.to_numeric(series, errors="coerce")
-    numeric = numeric[np.isfinite(numeric)]
-    if numeric.empty:
+    total = int(series.shape[0])
+    finite = numeric[np.isfinite(numeric)]
+    finite_count = int(finite.count())
+    if finite.empty:
         return [f"ℹ️  {label}: aucune valeur numérique disponible"]
 
-    percentiles = numeric.quantile([0.25, 0.5, 0.75, 0.9, 0.95]).rename(
+    percentiles = finite.quantile([0.25, 0.5, 0.75, 0.9, 0.95]).rename(
         {0.25: "25%", 0.5: "50%", 0.75: "75%", 0.9: "90%", 0.95: "95%"}
     )
+    count_display = (
+        f"n={finite_count}/{total}"
+        if finite_count != total
+        else f"n={finite_count}"
+    )
     summary_lines = [
-        f"📊 {label} (n={int(numeric.count())}):",
-        f"    mean ± std : {numeric.mean():.3f} ± {numeric.std(ddof=0):.3f}",
-        f"    min / max  : {numeric.min():.3f} – {numeric.max():.3f}",
+        f"📊 {label} ({count_display}):",
+        f"    mean ± std : {finite.mean():.3f} ± {finite.std(ddof=0):.3f}",
+        f"    min / max  : {finite.min():.3f} – {finite.max():.3f}",
     ]
     quantile_str = ", ".join(f"{idx}={val:.3f}" for idx, val in percentiles.items())
     summary_lines.append(f"    quantiles  : {quantile_str}")
@@ -163,6 +170,10 @@ def _report_metrics(frame: pd.DataFrame) -> int:
 
     print(_spacegroup_match_rate(frame))
 
+    # ``show_eval_metrics`` intentionally reports raw RMSD values without
+    # applying a success threshold.  Downstream tooling (e.g. ``beam_sweep`` or
+    # bespoke notebooks) is expected to decide whether a given RMSD qualifies as
+    # a "match" by supplying their own threshold when computing rates.
     for label, column in (
         ("RMSD", "rmsd"),
         ("Rwp", "rwp"),
@@ -172,8 +183,15 @@ def _report_metrics(frame: pd.DataFrame) -> int:
         if column not in frame.columns:
             print(f"ℹ️  {label}: colonne manquante")
             continue
-        for line in _describe_numeric(f"{label}", frame[column]):
+        summary_lines = _describe_numeric(f"{label}", frame[column])
+        for line in summary_lines:
             print(line)
+        if column == "rmsd" and summary_lines:
+            print(
+                "    (n indique le nombre de structures avec un RMSD numérique. "
+                "Aucun seuil n'est appliqué ; toute valeur finie est considérée comme "
+                "un alignement abouti.)"
+            )
 
     _print_validity_breakdown(frame)
 
