@@ -12,6 +12,8 @@ import pandas as pd
 from scipy.stats import wasserstein_distance
 from multiprocessing import Pool, cpu_count
 
+from show_eval_metrics import show_metrics
+
 from decifer.utility import extract_space_group_symbol, space_group_symbol_to_number
 
 def rwp(sample, gen):
@@ -167,3 +169,4 @@ if __name__ == "__main__":
         df = process(path, args.debug_max, top_k, args.top_k_metric)
         pickle_path = os.path.join(args.output_folder, label + '.pkl.gz')
         df.to_pickle(pickle_path)
+        show_metrics([pickle_path])

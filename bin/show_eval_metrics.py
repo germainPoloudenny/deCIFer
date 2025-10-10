@@ -151,29 +151,7 @@ def _print_validity_breakdown(frame: pd.DataFrame) -> None:
         print(_format_rate(label, frame[column]))
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Affiche un résumé des métriques d'évaluation générées par deCIFer.",
-    )
-    parser.add_argument(
-        "paths",
-        nargs="*",
-        help=(
-            "Fichiers .pkl ou .pkl.gz contenant les résultats de `collect_evaluations`. "
-            "Vous pouvez également passer des répertoires – ils seront parcourus "
-            "récursivement. Lorsque aucun chemin n'est fourni, le script cherche "
-            "automatiquement dans `slurm/`."
-        ),
-        default=["runs/deCIFer_cifs_v1_model/eval_bsm/cifs_v1.pkl.gz"]
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        frame = _load_frames(args.paths)
-    except FileNotFoundError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-
+def _report_metrics(frame: pd.DataFrame) -> int:
     total = len(frame)
     print("=== Résultats de l'évaluation ===")
     print(f"Nombre total d'échantillons : {total}")
@@ -208,6 +186,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(line)
 
     return 0
+
+
+def show_metrics(paths: Sequence[str]) -> int:
+    try:
+        frame = _load_frames(paths)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    return _report_metrics(frame)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Affiche un résumé des métriques d'évaluation générées par deCIFer.",
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help=(
+            "Fichiers .pkl ou .pkl.gz contenant les résultats de `collect_evaluations`. "
+            "Vous pouvez également passer des répertoires – ils seront parcourus "
+            "récursivement. Lorsque aucun chemin n'est fourni, le script cherche "
+            "automatiquement dans `slurm/`."
+        ),
+        default=["runs/deCIFer_cifs_v1_model/eval_bsm/cifs_v1.pkl.gz"]
+    )
+    args = parser.parse_args(argv)
+
+    return show_metrics(args.paths)
 
 
 if __name__ == "__main__":

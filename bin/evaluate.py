@@ -6,15 +6,16 @@ import sys
 import argparse
 import multiprocessing as mp
 from queue import Empty
-from queue import Empty
 from glob import glob
 import pickle
 import gzip
 from typing import Any, Dict, Optional, Tuple
 from warnings import warn
+from types import SimpleNamespace
 
 # Third-party library imports
 import torch
+import torch.distributed as dist
 import numpy as np
 from tqdm.auto import tqdm
 from pymatgen.io.cif import CifParser
@@ -46,7 +47,13 @@ from decifer.utility import (
     discrete_to_continuous_xrd,
     generate_continuous_xrd_from_cif,
 )
-from bin.train import TrainConfig
+from bin.train import setup_distributed, TrainConfig
+
+# Some checkpoints pickle TrainConfig from the training script's __main__ module.
+# When evaluating, mirror that registration so torch.load can resolve the class.
+_main_module = sys.modules.get("__main__")
+if _main_module is not None and not hasattr(_main_module, "TrainConfig"):
+    setattr(_main_module, "TrainConfig", TrainConfig)
 
 # Tokenizer, get start, padding and newline IDs
 TOKENIZER = Tokenizer()
@@ -410,6 +417,10 @@ def process_dataset(
     beam_size: int = 1,
     length_penalty: float = 1.0,
     beam_deterministic: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    use_distributed: bool = False,
+    pbar_disable: bool = False,
 ) -> Tuple[int, int]:
     """
     Processes a dataset for evaluation by generating tasks for model inference.
@@ -437,6 +448,10 @@ def process_dataset(
         beam_size (int): Beam width for beam search generation. Defaults to 1 (disabled).
         length_penalty (float): Length penalty applied when ranking beam search candidates. Defaults to 1.0.
         beam_deterministic (bool): Use classic (deterministic) beam search expansions. Defaults to False.
+        rank (int): Rank of the current process when running distributed evaluation.
+        world_size (int): Total number of processes participating in distributed evaluation.
+        use_distributed (bool): Whether distributed evaluation is enabled.
+        pbar_disable (bool): Disable the progress bar for the current process.
 
     Returns:
         Tuple[int, int]: Number of generations processed and number of tasks sent.
@@ -448,13 +463,25 @@ def process_dataset(
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_tokens", "xrd.q", "xrd.iq", "cif_string", "spacegroup"])
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl.gz")))
     total_samples = len(dataset) if max_samples is None else min(len(dataset), max_samples)
+    if use_distributed:
+        total_samples_rank = max((total_samples - rank + world_size - 1) // world_size, 0)
+    else:
+        total_samples_rank = total_samples
     num_generations = 0
-    pbar = tqdm(total=total_samples, desc='Generating and parsing evaluation tasks...', leave=True)
+    pbar = tqdm(
+        total=total_samples_rank,
+        desc='Generating and parsing evaluation tasks...',
+        leave=True,
+        disable=pbar_disable or total_samples_rank == 0,
+    )
     padding_id = Tokenizer().padding_id
 
     for i, data in enumerate(iter(dataset)):
         if i >= total_samples:
             break
+
+        if use_distributed and (i % world_size) != rank:
+            continue
 
         if debug_max is not None and num_generations >= debug_max:
             break
@@ -572,6 +599,10 @@ def main():
         --dataset-name (str): Name of the dataset for saving evaluation results.
         --model-name (str): Name of the model for saving evaluation results.
         --num-reps (int): Number of repetitions per sample for CIF generation.
+        --distributed (bool): Enable distributed multi-GPU evaluation.
+        --dist-backend (str): Backend used by torch.distributed during distributed evaluation.
+        --dist-url (str): Initialization URL for torch.distributed environments.
+        --device (str): Device identifier used for loading and running the model (e.g., 'cuda' or 'cpu').
 
     Returns:
         None: The function manages dataset processing, task distribution, and evaluation.
@@ -609,17 +640,31 @@ def main():
     parser.add_argument('--qstep', type=float, default=0.01)
     parser.add_argument('--wavelength', type=str, default='CuKa')
     parser.add_argument('--eta', type=float, default=0.5)
+    parser.add_argument('--distributed', action='store_true', help='Enable multi-GPU evaluation using torch.distributed.')
+    parser.add_argument('--dist-backend', type=str, default='nccl', help='Distributed backend to use.')
+    parser.add_argument('--dist-url', type=str, default='env://', help='Initialization URL for torch.distributed.')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for model evaluation (e.g., "cuda" or "cpu").')
 
     # Parse command-line arguments
     args = parser.parse_args()
 
-    if os.path.exists(args.model_ckpt):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = load_model_from_checkpoint(args.model_ckpt, device)
-        model.eval()
-    else:
-        print(f"Checkpoint not found at {args.model_ckpt}")
+    dist_config = SimpleNamespace(
+        distributed=args.distributed,
+        dist_backend=args.dist_backend,
+        dist_url=args.dist_url,
+        device=args.device,
+    )
+    use_distributed, world_size, rank, _local_rank = setup_distributed(dist_config)
+
+    if not os.path.exists(args.model_ckpt):
+        if rank == 0:
+            print(f"Checkpoint not found at {args.model_ckpt}")
         sys.exit(1)
+
+    device = torch.device(dist_config.device)
+    model = load_model_from_checkpoint(args.model_ckpt, device)
+    model.eval()
+    torch.set_grad_enabled(False)
 
     # Augmentation parameters
     if args.add_noise is not None:
@@ -676,7 +721,7 @@ def main():
         mp.Process(target=worker, args=(input_queue, eval_files_dir, done_queue))
         for _ in range(args.num_workers)
     ]
-    
+
     for process in processes:
         process.start()
 
@@ -703,28 +748,36 @@ def main():
         beam_size=args.beam_size,
         length_penalty=args.length_penalty,
         beam_deterministic=args.beam_deterministic,
+        rank=rank,
+        world_size=world_size,
+        use_distributed=use_distributed,
+        pbar_disable=rank != 0,
     )
 
-    if num_send > 0:
-        # Create a new progress bar for task completion
-        pbar = tqdm(total=num_gens, desc='Evaluating...', leave=True)
-        # Monitor the done_queue and update the progress bar
+    if num_send > 0 and args.num_workers > 0:
+        if not use_distributed or rank == 0:
+            # Create a new progress bar for task completion
+            pbar = tqdm(total=num_gens, desc='Evaluating...', leave=True)
         completed_tasks = 0
         while completed_tasks < num_gens:
             try:
                 # Wait for a task completion signal
                 done_queue.get(timeout=1)
-                # Update the progress bar
-                pbar.update(1)
                 completed_tasks += 1
+                if not use_distributed or rank == 0:
+                    pbar.update(1)
             except Empty:
                 pass
-
-        pbar.close()
+        if not use_distributed or rank == 0:
+            pbar.close()
 
     # Join worker processes after processing is complete
     for process in processes:
         process.join()
+
+    if use_distributed and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 if __name__ == '__main__':
     main()
