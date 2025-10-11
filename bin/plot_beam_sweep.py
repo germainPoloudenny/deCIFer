@@ -150,7 +150,9 @@ def gather_metrics(
                 and isinstance(total_rows, numbers.Real)
                 and total_rows
             ):
-                record["rmsd_match_rate_overall"] = float(match_count) / float(total_rows)
+                record["rmsd_match_rate_overall"] = (
+                    float(match_count) / float(total_rows)
+                ) * 100.0
             else:
                 record["rmsd_match_rate_overall"] = float("nan")
 
@@ -207,8 +209,13 @@ def _plot_metric(
         fig, ax = plt.subplots()
         ax.plot(x, y, marker="o")
         ax.set_xlabel("Beam size")
-        ax.set_ylabel(metric.replace("_", " ").capitalize())
-        ax.set_title(f"{metric.replace('_', ' ').title()} – {variant.description}")
+
+        display_name = metric.replace("_", " ")
+        if metric == "rmsd_match_rate_overall":
+            display_name += " (%)"
+
+        ax.set_ylabel(display_name.title())
+        ax.set_title(f"{display_name.title()} – {variant.description}")
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
 
         metric_slug = _slugify_metric(metric)
