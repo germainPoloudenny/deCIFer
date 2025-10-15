@@ -197,7 +197,7 @@ def _build_condition_variants() -> List[ConditionVariant]:
     ]
 
 
-def _build_decoding_variants(beam_size: int, *, sampling_top_k: int) -> List[DecodingVariant]:
+def _build_decoding_variants(beam_size: int, *, sampling_top_k: int, max_samples: int) -> List[DecodingVariant]:
     return [
         DecodingVariant(
             key="k_sampling",
@@ -223,8 +223,8 @@ def _build_decoding_variants(beam_size: int, *, sampling_top_k: int) -> List[Dec
             beam_size=beam_size,
             num_reps=beam_size,
             beam_deterministic=True,
-            evaluate_args=("--top-k", str(beam_size)),
-            collect_args=("--top-k", str(beam_size)),
+            evaluate_args=(),
+            collect_args=("--top-k", str(max_samples)),
         ),
     ]
 
@@ -368,7 +368,7 @@ def main() -> None:
 
     records: List[Record] = []
     condition_variants = _build_condition_variants()
-    decoding_variants = _build_decoding_variants(args.beam_size, sampling_top_k=args.sampling_top_k)
+    decoding_variants = _build_decoding_variants(args.beam_size, sampling_top_k=args.sampling_top_k, max_samples=args.max_samples)
 
     for condition in condition_variants:
         for decoding in decoding_variants:
