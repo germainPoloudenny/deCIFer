@@ -18,6 +18,19 @@ import pandas as pd
 
 Record = Dict[str, object]
 
+MAX_SAMPLE_GRID: Sequence[Optional[int]] = (
+    100,
+    1000,
+    10_000,
+    100_000,
+    1_000_000,
+    None,
+)
+
+
+def _format_max_samples(max_samples: Optional[int]) -> str:
+    return "all" if max_samples is None else f"{max_samples}"
+
 
 @dataclass(frozen=True)
 class ConditionVariant:
@@ -197,7 +210,12 @@ def _build_condition_variants() -> List[ConditionVariant]:
     ]
 
 
-def _build_decoding_variants(beam_size: int, *, sampling_top_k: int, max_samples: int) -> List[DecodingVariant]:
+def _build_decoding_variants(
+    beam_size: int,
+    *,
+    sampling_top_k: int,
+    collect_top_k: Optional[int],
+) -> List[DecodingVariant]:
     return [
         DecodingVariant(
             key="k_sampling",
@@ -224,7 +242,7 @@ def _build_decoding_variants(beam_size: int, *, sampling_top_k: int, max_samples
             num_reps=beam_size,
             beam_deterministic=True,
             evaluate_args=(),
-            collect_args=("--top-k", str(max_samples)),
+            collect_args=("--top-k", str(collect_top_k)) if collect_top_k is not None else (),
         ),
     ]
 
@@ -238,6 +256,7 @@ def _prepare_record(
     dataset_name: str,
     eval_folder: Path,
     pickle_path: Path,
+    max_samples: Optional[int],
 ) -> Record:
     record: Record = {
         "conditioning": condition.key,
@@ -248,7 +267,7 @@ def _prepare_record(
         "evaluate_out_folder": str(eval_folder.parent),
         "eval_files_folder": str(eval_folder),
         "collect_pickle_path": str(pickle_path),
-        "max_samples": args.max_samples,
+        "max_samples": max_samples,
         "beam_size_used": decoding.beam_size,
         "num_reps": decoding.num_reps,
         "length_penalty": args.length_penalty,
@@ -275,12 +294,6 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default="conditioning_decoding",
         help="Prefix used for the --dataset-name argument.",
-    )
-    parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=1000,
-        help="Number of samples evaluated from the test dataset.",
     )
     parser.add_argument(
         "--beam-size",
@@ -368,94 +381,105 @@ def main() -> None:
 
     records: List[Record] = []
     condition_variants = _build_condition_variants()
-    decoding_variants = _build_decoding_variants(args.beam_size, sampling_top_k=args.sampling_top_k, max_samples=args.max_samples)
 
-    for condition in condition_variants:
-        for decoding in decoding_variants:
-            dataset_name = f"{args.dataset_name_prefix}_{condition.key}_{decoding.key}"
-            out_folder = args.out_root / condition.key / decoding.key
-            eval_files_dir = out_folder / "eval_files" / dataset_name
-            collect_output_dir = out_folder / "collected"
-            pickle_path = collect_output_dir / f"{dataset_name}.pkl.gz"
+    for max_samples in MAX_SAMPLE_GRID:
+        decoding_variants = _build_decoding_variants(
+            args.beam_size,
+            sampling_top_k=args.sampling_top_k,
+            collect_top_k=max_samples,
+        )
+        max_samples_label = _format_max_samples(max_samples)
 
-            _ensure_directory(out_folder)
-            _ensure_directory(collect_output_dir)
-
-            if args.skip_existing and pickle_path.exists():
-                print(
-                    "⚠️  Skipping condition=%s decoding=%s (existing %s)."
-                    % (condition.key, decoding.key, pickle_path)
+        for condition in condition_variants:
+            for decoding in decoding_variants:
+                dataset_name = (
+                    f"{args.dataset_name_prefix}_max_{max_samples_label}_{condition.key}_{decoding.key}"
                 )
-            else:
-                evaluate_cmd: List[str] = list(torchrun_base)
-                evaluate_cmd.extend(
-                    [
-                        "bin/evaluate.py",
-                        "--model-ckpt",
-                        str(args.model_ckpt),
-                        "--dataset-path",
-                        str(args.dataset_path),
-                        "--out-folder",
-                        str(out_folder),
-                        "--dataset-name",
-                        dataset_name,
-                        "--max-samples",
-                        str(args.max_samples),
-                        "--beam-size",
-                        str(decoding.beam_size),
-                        "--length-penalty",
-                        str(args.length_penalty),
+                out_folder = args.out_root / f"max_{max_samples_label}" / condition.key / decoding.key
+                eval_files_dir = out_folder / "eval_files" / dataset_name
+                collect_output_dir = out_folder / "collected"
+                pickle_path = collect_output_dir / f"{dataset_name}.pkl.gz"
+
+                _ensure_directory(out_folder)
+                _ensure_directory(collect_output_dir)
+
+                if args.skip_existing and pickle_path.exists():
+                    print(
+                        "⚠️  Skipping max_samples=%s condition=%s decoding=%s (existing %s)."
+                        % (max_samples_label, condition.key, decoding.key, pickle_path)
+                    )
+                else:
+                    evaluate_cmd: List[str] = list(torchrun_base)
+                    evaluate_cmd.extend(
+                        [
+                            "bin/evaluate.py",
+                            "--model-ckpt",
+                            str(args.model_ckpt),
+                            "--dataset-path",
+                            str(args.dataset_path),
+                            "--out-folder",
+                            str(out_folder),
+                            "--dataset-name",
+                            dataset_name,
+                            "--beam-size",
+                            str(decoding.beam_size),
+                            "--length-penalty",
+                            str(args.length_penalty),
+                        ]
+                    )
+
+                    if max_samples is not None:
+                        evaluate_cmd.extend(["--max-samples", str(max_samples)])
+
+                    if decoding.num_reps is not None:
+                        evaluate_cmd.extend(["--num-reps", str(decoding.num_reps)])
+
+                    if decoding.beam_deterministic:
+                        evaluate_cmd.append("--beam-deterministic")
+
+                    evaluate_cmd.extend(condition.evaluate_args)
+                    evaluate_cmd.extend(decoding.evaluate_args)
+
+                    if args.evaluate_extra_args:
+                        evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
+
+                    _run_command(evaluate_cmd)
+
+                    collect_cmd: List[str] = [
+                        sys.executable,
+                        "bin/collect_evaluations.py",
+                        "--eval-folder-paths",
+                        str(eval_files_dir),
+                        "--output-folder",
+                        str(collect_output_dir),
                     ]
+                    collect_cmd.extend(decoding.collect_args)
+                    _run_command(collect_cmd)
+
+                if not pickle_path.exists():
+                    raise FileNotFoundError(
+                        f"Expected collected results at {pickle_path}, but the file does not exist."
+                    )
+
+                metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
+                record = _prepare_record(
+                    args=args,
+                    condition=condition,
+                    decoding=decoding,
+                    metrics=metrics,
+                    dataset_name=dataset_name,
+                    eval_folder=eval_files_dir,
+                    pickle_path=pickle_path,
+                    max_samples=max_samples,
                 )
-
-                if decoding.num_reps is not None:
-                    evaluate_cmd.extend(["--num-reps", str(decoding.num_reps)])
-
-                if decoding.beam_deterministic:
-                    evaluate_cmd.append("--beam-deterministic")
-
-                evaluate_cmd.extend(condition.evaluate_args)
-                evaluate_cmd.extend(decoding.evaluate_args)
-
-                if args.evaluate_extra_args:
-                    evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
-
-                _run_command(evaluate_cmd)
-
-                collect_cmd: List[str] = [
-                    sys.executable,
-                    "bin/collect_evaluations.py",
-                    "--eval-folder-paths",
-                    str(eval_files_dir),
-                    "--output-folder",
-                    str(collect_output_dir),
-                ]
-                collect_cmd.extend(decoding.collect_args)
-                _run_command(collect_cmd)
-
-            if not pickle_path.exists():
-                raise FileNotFoundError(
-                    f"Expected collected results at {pickle_path}, but the file does not exist."
-                )
-
-            metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
-            record = _prepare_record(
-                args=args,
-                condition=condition,
-                decoding=decoding,
-                metrics=metrics,
-                dataset_name=dataset_name,
-                eval_folder=eval_files_dir,
-                pickle_path=pickle_path,
-            )
-            records.append(record)
+                records.append(record)
 
     if not records:
         print("No records collected; nothing to write.")
         return
 
     frame = pd.DataFrame.from_records(records)
-    frame = frame.sort_values(by=["conditioning", "decoding"]).reset_index(drop=True)
+    frame = frame.sort_values(by=["max_samples", "conditioning", "decoding"], na_position="last").reset_index(drop=True)
     frame.to_csv(summary_path, index=False)
     print(f"✅ Summary CSV written to {summary_path}")
 
