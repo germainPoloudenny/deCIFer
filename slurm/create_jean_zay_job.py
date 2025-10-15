@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gpu-type",
         choices=sorted(GPU_PARTITIONS),
-        default="a100",
+        default="h100",
         help="GPU type to request on Jean Zay.",
     )
     parser.add_argument(
