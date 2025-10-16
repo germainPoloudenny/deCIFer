@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 try:
-    from beam_sweep import _collect_metrics  # type: ignore
+    from bin.eval.beam_sweep import _collect_metrics  # type: ignore
 except ImportError as exc:  # pragma: no cover - defensive guard
     raise ImportError(
         "Unable to import beam_sweep._collect_metrics. "

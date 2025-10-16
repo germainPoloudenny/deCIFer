@@ -12,7 +12,7 @@ import pandas as pd
 from scipy.stats import wasserstein_distance
 from multiprocessing import Pool, cpu_count
 
-from show_eval_metrics import show_metrics
+from bin.eval.show_eval_metrics import show_metrics
 
 from decifer.utility import extract_space_group_symbol, space_group_symbol_to_number
 

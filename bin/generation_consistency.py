@@ -13,7 +13,7 @@ from pymatgen.analysis.structure_matcher import StructureMatcher
 
 # decifer/Refactored imports
 from bin.train import TrainConfig
-from bin.evaluate import load_model_from_checkpoint, extract_prompt
+from bin.eval.evaluate import load_model_from_checkpoint, extract_prompt
 from decifer.tokenizer import Tokenizer
 from decifer.decifer_dataset import DeciferDataset
 from decifer.utility import (
