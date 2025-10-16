@@ -172,7 +172,7 @@ def _build_variant() -> Variant:
     return {
         "variant": "top1",
         "dataset_suffix": "top1",
-        "description": "num_reps=1 (top-1 generation)",
+        "description": "Beam search",
         "num_reps": None,
         "collect_args": [],
     }
@@ -362,7 +362,7 @@ def _run_baseline(
     variant = {
         "variant": "baseline",
         "dataset_suffix": "baseline",
-        "description": "Baseline evaluation without beam search (temperature/top-k sampling)",
+        "description": "Baseline evaluation (temperature/top-k sampling)",
         "num_reps": None,
         "collect_args": [],
     }

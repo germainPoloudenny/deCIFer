@@ -165,7 +165,7 @@ def main() -> None:
 
 set -euo pipefail
 
-REPO_DIR={shlex.quote(str(repo_root))}
+REPO_DIR=/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer
 COMMIT_HASH={commit_hash!r}
 RUN_COMMAND={shlex.quote(command)}
 GENERATED_AT={timestamp!r}

@@ -38,7 +38,6 @@ plt.rcParams.update(
 class MetricLayout:
     """Container describing how to render a metric on a line plot."""
 
-    title: str
     x_label: str = "Beam size"
     y_label: Optional[str] = None
     legend_title: Optional[str] = None
@@ -47,7 +46,6 @@ class MetricLayout:
 
 _METRIC_LAYOUT_OVERRIDES = {
     "rmsd_match_count": MetricLayout(
-        title="Impact of Beam Size on Structural Matching",
         y_label="RMSD match count (higher is better)",
         legend_title="Variant",
         prefer_integer_ticks=True,
@@ -227,17 +225,15 @@ def write_publication_quality_plots(
         display_name = metric.replace("_", " ")
         layout = _METRIC_LAYOUT_OVERRIDES.get(
             metric,
-            MetricLayout(title=display_name.title(), y_label=display_name.title()),
+            MetricLayout(y_label=display_name.title()),
         )
 
         xlabel = layout.x_label
         ylabel = layout.y_label or display_name.title()
-        title = layout.title
         legend_title = layout.legend_title
 
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
         ax.grid(True, which="both", axis="y", linestyle="--", linewidth=0.6, alpha=0.45)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)

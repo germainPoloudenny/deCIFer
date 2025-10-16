@@ -12,10 +12,10 @@
 
 set -euo pipefail
 
-REPO_DIR=/home/gpoloudenny/Projects/deCIFer
-COMMIT_HASH='db12aa782d8a42e8c7bfc05ca095e66c2b5caaef'
+REPO_DIR=/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer
+COMMIT_HASH='eecc50439c4fe32067840ca7c12a81d7487eb2d6'
 RUN_COMMAND='python bin/conditioning_decoding_sweep.py --model-ckp runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding'
-GENERATED_AT='20251016_094352'
+GENERATED_AT='20251016_101142'
 
 mkdir -p "$WORK/deCIFer/logs"
 
