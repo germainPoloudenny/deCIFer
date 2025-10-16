@@ -155,8 +155,8 @@ def main() -> None:
         "#!/bin/bash",
         f"#SBATCH --job-name={args.job_name}",
         f"#SBATCH --partition={partition}",
-        f"#SBATCH --C {constraint}",   # <<-- s'adapte (v100/a100/h100)
-        f"#SBATCH --cpus-per-task={args.cpus}",
+        f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
+        f"#SBATCH --gres={gres}",               # <<-- on demande bien 1 GPU
     ]
     if account:
         header_lines.append(f"#SBATCH --account={account}")
