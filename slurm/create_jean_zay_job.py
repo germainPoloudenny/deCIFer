@@ -163,7 +163,8 @@ def main() -> None:
     header_lines.extend(
         [
             f"#SBATCH --time={args.time}",
-            f"#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out",
+           
+            f"#SBATCH  --output=/gpfsscratch/rech/nxk/uvv78gt/deCIFer/logs/decifer_%j.out",
             f"#SBATCH --ntasks-per-node=1",
             f"#SBATCH --hint=nomultithread",
             "",
