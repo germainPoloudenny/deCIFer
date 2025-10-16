@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modules",
         nargs="*",
-        default=[" pytorch-gpu/py3/2.2.0"],
+        default=["pytorch-gpu/py3/2.2.0"],
         help="Module list to load inside the batch job.",
     )
     return parser.parse_args()
@@ -145,9 +145,8 @@ def main() -> None:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    modules_block = "\n".join(
-        f"module load {module}" for module in args.modules if module
-    )
+    modules = [module.strip() for module in args.modules if module and module.strip()]
+    modules_block = "\n".join(f"module load {module}" for module in modules)
 
     header_lines = [
         "#!/bin/bash",
@@ -187,7 +186,7 @@ echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
 module load git
 git checkout $COMMIT_HASH
 
-echo "[Jean Zay helper] Using modules: {' '.join(args.modules)}"
+echo "[Jean Zay helper] Using modules: {' '.join(modules)}"
 module purge
 {modules_block}
 
