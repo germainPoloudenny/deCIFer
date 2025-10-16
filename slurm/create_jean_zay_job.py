@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime
 
+x
 GPU_PARTITIONS = {
     "v100": {"partition": "gpu_p2", "gres": "gpu:v100:1"},
     "a100": {"partition": "gpu_p5", "gres": "gpu:a100:1"},
