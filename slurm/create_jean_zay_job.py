@@ -12,9 +12,9 @@ from datetime import datetime
 
 # Mapping des types de GPU -> partition / gres / contrainte
 GPU_PARTITIONS = {
-    "v100": {"partition": "gpu_p2", "gres": "gpu:1", "constraint": "v100"},
-    "a100": {"partition": "gpu_p5", "gres": "gpu:1", "constraint": "a100"},
-    "h100": {"partition": "gpu_p6", "gres": "gpu:1", "constraint": "h100"},
+    "v100": {"partition": "gpu_p2", "gres": "gpu:2", "constraint": "v100"},
+    "a100": {"partition": "gpu_p5", "gres": "gpu:2", "constraint": "a100"},
+    "h100": {"partition": "gpu_p6", "gres": "gpu:2", "constraint": "h100"},
 }
 
 GPU_DEFAULT_ACCOUNTS = {
@@ -103,6 +103,7 @@ def main() -> None:
 
     repo_root = pathlib.Path(run_git_command("rev-parse", "--show-toplevel")).resolve()
     commit_hash = run_git_command("rev-parse", "HEAD")
+    current_branch = run_git_command("rev-parse", "--abbrev-ref", "HEAD")
 
     gpu_type = args.gpu_type or "h100"
     account = args.account
@@ -165,7 +166,7 @@ def main() -> None:
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
         f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
-        f"#SBATCH --gres={gres}",               # <<-- on demande bien 1 GPU
+        f"#SBATCH --gres={gres}",               # <<-- on demande bien 2 GPU
     ]
     if account:
         header_lines.append(f"#SBATCH --account={account}")
@@ -187,6 +188,7 @@ set -euo pipefail
 
 REPO_DIR={str(repo_root)!r}
 COMMIT_HASH={commit_hash!r}
+ORIGINAL_REF={current_branch!r}
 RUN_COMMAND={shlex.quote(command)}
 GENERATED_AT={timestamp!r}
 
@@ -200,6 +202,14 @@ module purge
 {modules_block}
 
 git checkout $COMMIT_HASH
+
+cleanup() {{
+    if [ "$ORIGINAL_REF" != "HEAD" ]; then
+        git checkout "$ORIGINAL_REF" || true
+    fi
+}}
+
+trap cleanup EXIT
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
