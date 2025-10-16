@@ -70,7 +70,12 @@ def parse_args() -> argparse.Namespace:
         help="Where to write the generated SLURM script.",
     )
     parser.add_argument(
-        "--job-name", default="decifer", help="Job name to use for #SBATCH."
+        "--job-name",
+        default=None,
+        help=(
+            "Job name to use for #SBATCH and the log file. Defaults to the command "
+            "file name."
+        ),
     )
     parser.add_argument(
         "--time",
@@ -80,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modules",
         nargs="*",
-        default=["python/3.11", " pytorch-gpu/py3/2.2.0"],
+        default=[" pytorch-gpu/py3/2.2.0"],
         help="Module list to load inside the batch job.",
     )
     return parser.parse_args()
@@ -134,6 +139,10 @@ def main() -> None:
     if not output_path.parent.exists():
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    job_name = args.job_name or args.command_file.stem
+    job_name = job_name.replace(" ", "_")
+    log_file_name = f"logs/{job_name}.out"
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     modules_block = "\n".join(
@@ -142,7 +151,7 @@ def main() -> None:
 
     header_lines = [
         "#!/bin/bash",
-        f"#SBATCH --job-name={args.job_name}",
+        f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
         f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
         f"#SBATCH --gres={gres}",               # <<-- on demande bien 1 GPU
@@ -152,7 +161,7 @@ def main() -> None:
     header_lines.extend(
         [
             f"#SBATCH --time={args.time}",
-            f"#SBATCH --output=logs/{args.job_name}_%j.out",
+            f"#SBATCH --output={log_file_name}",
             f"#SBATCH --ntasks-per-node=1",
             f"#SBATCH --hint=nomultithread",
             "",
