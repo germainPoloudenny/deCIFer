@@ -16,6 +16,10 @@ import numpy as np
 import pandas as pd
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+EVALUATE_SCRIPT = SCRIPT_DIR / "evaluate.py"
+COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
+
 Record = Dict[str, object]
 
 MAX_SAMPLE_GRID: Sequence[Optional[int]] = (
@@ -412,7 +416,7 @@ def main() -> None:
                     evaluate_cmd: List[str] = list(torchrun_base)
                     evaluate_cmd.extend(
                         [
-                            "bin/evaluate.py",
+                            str(EVALUATE_SCRIPT),
                             "--model-ckpt",
                             str(args.model_ckpt),
                             "--dataset-path",
@@ -447,7 +451,7 @@ def main() -> None:
 
                     collect_cmd: List[str] = [
                         sys.executable,
-                        "bin/collect_evaluations.py",
+                        str(COLLECT_SCRIPT),
                         "--eval-folder-paths",
                         str(eval_files_dir),
                         "--output-folder",
