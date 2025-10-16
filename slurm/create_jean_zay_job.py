@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modules",
         nargs="*",
-        default=["pytorch-gpu/py3/2.2.0"],
+        default=["pytorch-gpu/py3/2.5.0"],
         help="Module list to load inside the batch job.",
     )
     return parser.parse_args()
@@ -146,7 +146,19 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     modules = [module.strip() for module in args.modules if module and module.strip()]
-    modules_block = "\n".join(f"module load {module}" for module in modules)
+
+    modules_to_load: list[str] = []
+    if gpu_type != "v100":
+        arch_module = f"arch/{gpu_type}"
+        if not any(module.startswith("arch/") for module in modules):
+            modules_to_load.append(arch_module)
+
+    modules_to_load.extend(modules)
+
+    if all(module != "git" for module in modules_to_load):
+        modules_to_load.append("git")
+
+    modules_block = "\n".join(f"module load {module}" for module in modules_to_load)
 
     header_lines = [
         "#!/bin/bash",
@@ -183,12 +195,11 @@ mkdir -p "$WORK/deCIFer/logs"
 cd "$REPO_DIR"
 echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
 
-module load git
-git checkout $COMMIT_HASH
-
-echo "[Jean Zay helper] Using modules: {' '.join(modules)}"
+echo "[Jean Zay helper] Using modules: {' '.join(modules_to_load)}"
 module purge
 {modules_block}
+
+git checkout $COMMIT_HASH
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
