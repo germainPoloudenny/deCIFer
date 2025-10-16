@@ -130,7 +130,7 @@ def main() -> None:
         f"#SBATCH --gres={gres}",
     ]
     if account:
-        header_lines.append(f"#SBATCH --account={account}")
+        header_lines.append(f"#SBATCH -A {account}")
     header_lines.extend(
         [
             f"#SBATCH --time={args.time}",
