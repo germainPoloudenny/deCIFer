@@ -13,9 +13,9 @@
 set -euo pipefail
 
 REPO_DIR=/home/gpoloudenny/Projects/deCIFer
-COMMIT_HASH='e26f1e88a0f55ae182dcb18bd552be460db57aa5'
+COMMIT_HASH='db12aa782d8a42e8c7bfc05ca095e66c2b5caaef'
 RUN_COMMAND='python bin/conditioning_decoding_sweep.py --model-ckp runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding'
-GENERATED_AT='20251016_094122'
+GENERATED_AT='20251016_094352'
 
 mkdir -p "$WORK/deCIFer/logs"
 
