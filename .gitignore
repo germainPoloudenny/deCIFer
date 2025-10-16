@@ -46,3 +46,5 @@ runs/*
 .gitignore
 
 tmp/
+
+slurm/jean_zay_job.sh 
