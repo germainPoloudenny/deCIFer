@@ -155,7 +155,7 @@ def main() -> None:
         "#!/bin/bash",
         f"#SBATCH --job-name={args.job_name}",
         f"#SBATCH --partition={partition}",
-        f"#SBATCH --C={constraint}",   # <<-- s'adapte (v100/a100/h100)
+        f"#SBATCH --C {constraint}",   # <<-- s'adapte (v100/a100/h100)
         f"#SBATCH --cpus-per-task={args.cpus}",
     ]
     if account:
