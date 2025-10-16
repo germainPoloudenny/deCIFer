@@ -152,7 +152,7 @@ def main() -> None:
     header_lines.extend(
         [
             f"#SBATCH --time={args.time}",
-            f"#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out",
+            f"#SBATCH --output=logs/{args.job_name}_%j.out",
             f"#SBATCH --ntasks-per-node=1",
             f"#SBATCH --hint=nomultithread",
             "",
@@ -174,11 +174,9 @@ mkdir -p "$WORK/deCIFer/logs"
 
 cd "$REPO_DIR"
 echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
-git fetch --all --prune
-if ! git checkout "$COMMIT_HASH"; then
-    echo "Failed to checkout commit $COMMIT_HASH" >&2
-    exit 1
-fi
+
+module load git
+git checkout $COMMIT_HASH
 
 echo "[Jean Zay helper] Using modules: {' '.join(args.modules)}"
 module purge
@@ -186,6 +184,8 @@ module purge
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
+
+export PYTHONPATH=\$PYTHONPATH:/lustre/fswork/projects/rech/nxk/uvv78gt/
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"

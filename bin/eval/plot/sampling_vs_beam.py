@@ -166,9 +166,21 @@ def write_publication_quality_plots(
             color = color_map.get(variant)
             marker = marker_map.get(variant, "o")
 
+            aggregated = (
+                subset.loc[mask, ["beam_size", metric]]
+                .groupby("beam_size")
+                .agg(["mean", "std", "count"])
+            )
+            aggregated.columns = ["mean", "std", "count"]
+
+            x_values = aggregated.index.to_numpy()
+            y_mean = aggregated["mean"].to_numpy()
+            y_std = aggregated["std"].to_numpy()
+            counts = aggregated["count"].to_numpy()
+
             ax.plot(
-                subset.loc[mask, "beam_size"],
-                y[mask],
+                x_values,
+                y_mean,
                 marker=marker,
                 linewidth=2.3,
                 markersize=8,
@@ -176,8 +188,21 @@ def write_publication_quality_plots(
                 label=label,
             )
 
+            has_repeated_runs = np.any(counts > 1)
+            if has_repeated_runs and np.any(np.nan_to_num(y_std) > 0):
+                ax.errorbar(
+                    x_values,
+                    y_mean,
+                    yerr=y_std,
+                    linestyle="none",
+                    color=color,
+                    capsize=4,
+                    elinewidth=1.4,
+                    alpha=0.75,
+                )
+
             if annotate_points:
-                for x_val, y_val in zip(subset.loc[mask, "beam_size"], y[mask]):
+                for x_val, y_val in zip(x_values, y_mean):
                     ax.annotate(
                         _format_annotation(float(y_val)),
                         xy=(x_val, y_val),
@@ -225,9 +250,8 @@ def write_publication_quality_plots(
             frameon=False,
             handlelength=2.5,
             handletextpad=0.8,
-            loc="upper left",
-            bbox_to_anchor=(0.0, 1.02),
-            borderaxespad=0.0,
+            loc="lower right",
+            fontsize=11,
         )
         if legend is not None and legend.get_title() is not None:
             legend.get_title().set_fontweight("bold")
