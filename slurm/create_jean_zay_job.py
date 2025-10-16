@@ -11,9 +11,9 @@ import sys
 from datetime import datetime
 
 GPU_PARTITIONS = {
-    "v100": {"partition": "gpu_p2", "gres": "gpu:v100:1"},
-    "a100": {"partition": "gpu_p5", "gres": "gpu:a100:1"},
-    "h100": {"partition": "gpu_p6", "gres": "gpu:h100:1"},
+    "v100": {"partition": "gpu_p2", "gres": "gpu:1"},
+    "a100": {"partition": "gpu_p5", "gres": "gpu:1"},
+    "h100": {"partition": "gpu_p6", "gres": "gpu:1"},
 }
 
 GPU_DEFAULT_ACCOUNTS = {
