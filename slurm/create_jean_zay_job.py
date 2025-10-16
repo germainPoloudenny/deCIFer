@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         help="GPU type to request on Jean Zay (default: h100).",
     )
     parser.add_argument(
-        "--account",
+        "--A",
         default=None,
         help=(
             "Slurm account to charge. Defaults to an account matching the selected GPU "
