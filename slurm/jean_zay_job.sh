@@ -13,9 +13,9 @@
 set -euo pipefail
 
 REPO_DIR=/home/gpoloudenny/Projects/deCIFer
-COMMIT_HASH='9a47bc455facb2903593090b1a3450cb24aa1d3b'
+COMMIT_HASH='e26f1e88a0f55ae182dcb18bd552be460db57aa5'
 RUN_COMMAND='python bin/conditioning_decoding_sweep.py --model-ckp runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding'
-GENERATED_AT='20251016_093535'
+GENERATED_AT='20251016_094122'
 
 mkdir -p "$WORK/deCIFer/logs"
 
@@ -33,7 +33,7 @@ module load pytorch-gpu/py3/2.3.0
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
 
-export PYTHONPATH=\$PYTHONPATH:/lustre/fswork/projects/rech/nxk/uvv78gt/
+export PYTHONPATH=$PYTHONPATH:/lustre/fswork/projects/rech/nxk/uvv78gt/
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
