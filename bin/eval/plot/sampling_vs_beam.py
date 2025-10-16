@@ -7,6 +7,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from itertools import cycle
+from textwrap import fill
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -73,6 +74,8 @@ _DEFAULT_COLORS = [
 ]
 
 _DEFAULT_MARKERS = ["o", "s", "^", "D", "P", "X"]
+
+_LEGEND_MAX_CHARS_PER_LINE = 36
 
 
 def _slugify_metric(name: str) -> str:
@@ -158,6 +161,7 @@ def write_publication_quality_plots(
                 if not label_series.dropna().empty
                 else str(variant)
             )
+            label = fill(label, width=_LEGEND_MAX_CHARS_PER_LINE)
 
             color = color_map.get(variant)
             marker = marker_map.get(variant, "o")
@@ -209,7 +213,7 @@ def write_publication_quality_plots(
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.grid(True, which="both", linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.grid(True, which="both", axis="y", linestyle="--", linewidth=0.6, alpha=0.45)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
@@ -221,10 +225,14 @@ def write_publication_quality_plots(
             frameon=False,
             handlelength=2.5,
             handletextpad=0.8,
-            loc="best",
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.02),
+            borderaxespad=0.0,
         )
         if legend is not None and legend.get_title() is not None:
             legend.get_title().set_fontweight("bold")
+        if legend is not None and hasattr(legend, "_legend_box"):
+            legend._legend_box.align = "left"
 
         fig.tight_layout()
 

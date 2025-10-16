@@ -165,8 +165,6 @@ def main() -> None:
 
 set -euo pipefail
 
-export OMP_NUM_THREADS={args.cpus}
-
 REPO_DIR={shlex.quote(str(repo_root))}
 COMMIT_HASH={commit_hash!r}
 RUN_COMMAND={shlex.quote(command)}
