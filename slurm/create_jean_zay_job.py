@@ -174,7 +174,7 @@ def main() -> None:
         [
             f"#SBATCH --time={args.time}",
             f"#SBATCH --output={log_file_name}",
-            f"#SBATCH --ntasks-per-node=1",
+            f"#SBATCH --ntasks-per-node=2",
             f"#SBATCH --hint=nomultithread",
             "",
         ]
