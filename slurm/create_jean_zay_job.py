@@ -101,7 +101,7 @@ def main() -> None:
     if not command:
         raise SystemExit("Command file is empty")
 
-    repo_root = pathlib.Path(run_git_command("rev-parse", "--show-toplevel"))
+    repo_root = pathlib.Path(run_git_command("rev-parse", "--show-toplevel")).resolve()
     commit_hash = run_git_command("rev-parse", "HEAD")
 
     gpu_type = args.gpu_type or "h100"
@@ -174,7 +174,7 @@ def main() -> None:
 
 set -euo pipefail
 
-REPO_DIR=/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer
+REPO_DIR={str(repo_root)!r}
 COMMIT_HASH={commit_hash!r}
 RUN_COMMAND={shlex.quote(command)}
 GENERATED_AT={timestamp!r}
