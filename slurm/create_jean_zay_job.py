@@ -16,6 +16,12 @@ GPU_PARTITIONS = {
     "h100": {"partition": "gpu_p6", "gres": "gpu:1"},
 }
 
+GPU_DEFAULT_ACCOUNTS = {
+    "v100": "nxk@v100",
+    "a100": "nxk@a100",
+    "h100": "nxk@h100",
+}
+
 
 def run_git_command(*args: str) -> str:
     try:
@@ -47,6 +53,14 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(GPU_PARTITIONS),
         default="h100",
         help="GPU type to request on Jean Zay.",
+    )
+    parser.add_argument(
+        "--account",
+        default=None,
+        help=(
+            "Slurm account to charge. Defaults to an account matching the selected GPU "
+            "type if available."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -97,6 +111,7 @@ def main() -> None:
     partition_info = GPU_PARTITIONS[args.gpu_type]
     gres = partition_info["gres"]
     partition = partition_info["partition"]
+    account = args.account or GPU_DEFAULT_ACCOUNTS.get(args.gpu_type)
 
     output_path: pathlib.Path = args.output
     if not output_path.parent.exists():
@@ -108,14 +123,27 @@ def main() -> None:
         f"module load {module}" for module in args.modules if module
     )
 
-    job_script = f"""#!/bin/bash
-#SBATCH --job-name={args.job_name}
-#SBATCH --partition={partition}
-#SBATCH --gres={gres}
-#SBATCH --time={args.time}
-#SBATCH --cpus-per-task={args.cpus}
-#SBATCH --mem={args.mem}
-#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out
+    header_lines = [
+        "#!/bin/bash",
+        f"#SBATCH --job-name={args.job_name}",
+        f"#SBATCH --partition={partition}",
+        f"#SBATCH --gres={gres}",
+    ]
+    if account:
+        header_lines.append(f"#SBATCH --account={account}")
+    header_lines.extend(
+        [
+            f"#SBATCH --time={args.time}",
+            f"#SBATCH --cpus-per-task={args.cpus}",
+            f"#SBATCH --mem={args.mem}",
+            f"#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out",
+            "",
+        ]
+    )
+
+    job_script = "\n".join(header_lines)
+
+    job_script += f"""
 
 set -euo pipefail
 
@@ -151,7 +179,11 @@ eval "$RUN_COMMAND"
     output_path.write_text(job_script)
     output_path.chmod(0o750)
 
-    print(f"Generated {output_path} for commit {commit_hash} on partition {partition}.")
+    account_display = account if account else "<none>"
+    print(
+        f"Generated {output_path} for commit {commit_hash} on partition {partition} "
+        f"(account {account_display})."
+    )
 
 
 if __name__ == "__main__":
