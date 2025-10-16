@@ -10,10 +10,11 @@ import subprocess
 import sys
 from datetime import datetime
 
+# Mapping des types de GPU -> partition / gres / contrainte
 GPU_PARTITIONS = {
-    "v100": {"partition": "gpu_p2", "gres": "gpu:1"},
-    "a100": {"partition": "gpu_p5", "gres": "gpu:1"},
-    "h100": {"partition": "gpu_p6", "gres": "gpu:1"},
+    "v100": {"partition": "gpu_p2", "gres": "gpu:1", "constraint": "v100"},
+    "a100": {"partition": "gpu_p5", "gres": "gpu:1", "constraint": "a100"},
+    "h100": {"partition": "gpu_p6", "gres": "gpu:1", "constraint": "h100"},
 }
 
 GPU_DEFAULT_ACCOUNTS = {
@@ -55,11 +56,11 @@ def parse_args() -> argparse.Namespace:
         help="GPU type to request on Jean Zay (default: h100).",
     )
     parser.add_argument(
-        "--A",
+        "--account",
         default=None,
         help=(
             "Slurm account to charge. Defaults to an account matching the selected GPU "
-            "type if available."
+            "type if available. You can use a suffix like nxk@v100."
         ),
     )
     parser.add_argument(
@@ -69,7 +70,8 @@ def parse_args() -> argparse.Namespace:
         help="Where to write the generated SLURM script.",
     )
     parser.add_argument(
-        "--job-name", default="decifer", help="Job name to use for #SBATCH.")
+        "--job-name", default="decifer", help="Job name to use for #SBATCH."
+    )
     parser.add_argument(
         "--time",
         default="12:00:00",
@@ -111,6 +113,7 @@ def main() -> None:
     gpu_type = args.gpu_type or "h100"
     account = args.account
 
+    # Si l'account fourni est de la forme "xxx@v100|a100|h100", on en tient compte
     account_gpu_suffix = None
     if account and "@" in account:
         _, _, account_gpu_suffix = account.partition("@")
@@ -133,6 +136,8 @@ def main() -> None:
     partition_info = GPU_PARTITIONS[gpu_type]
     gres = partition_info["gres"]
     partition = partition_info["partition"]
+    constraint = partition_info["constraint"]
+
     if account is None:
         account = GPU_DEFAULT_ACCOUNTS.get(gpu_type)
 
@@ -150,6 +155,10 @@ def main() -> None:
         "#!/bin/bash",
         f"#SBATCH --job-name={args.job_name}",
         f"#SBATCH --partition={partition}",
+        f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
+        f"#SBATCH --gres={gres}",               # <<-- on demande bien 1 GPU
+        f"#SBATCH --mem={args.mem}",
+        f"#SBATCH --cpus-per-task={args.cpus}",
     ]
     if account:
         header_lines.append(f"#SBATCH --account={account}")
@@ -157,7 +166,7 @@ def main() -> None:
         [
             f"#SBATCH --time={args.time}",
             f"#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out",
-            f"#SBATCH --ntasks-per-node=2",
+            f"#SBATCH --ntasks-per-node=1",
             f"#SBATCH --hint=nomultithread",
             "",
         ]
@@ -190,6 +199,7 @@ echo "[Jean Zay helper] Using modules: {' '.join(args.modules)}"
 module purge
 {modules_block}
 
+# Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
@@ -204,10 +214,9 @@ eval "$RUN_COMMAND"
     account_display = account if account else "<none>"
     print(
         f"Generated {output_path} for commit {commit_hash} on partition {partition} "
-        f"(account {account_display})."
+        f"with constraint {constraint} (account {account_display})."
     )
 
 
 if __name__ == "__main__":
     main()
-
