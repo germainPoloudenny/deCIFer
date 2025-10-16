@@ -9,15 +9,12 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
-import matplotlib
 import numpy as np
 import pandas as pd
 
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from bin.eval.plot.sampling_vs_beam import write_publication_quality_plots
 
 
 DEFAULT_BEAM_SIZES = [1, 2, 5, 10, 20]
@@ -247,68 +244,7 @@ def _prepare_summary_records(
     return record
 
 
-def _slugify_metric(name: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in name).strip("_").lower()
-
-
-def _select_numeric_metrics(frame: pd.DataFrame, ignore: Iterable[str]) -> List[str]:
-    numeric_columns = frame.select_dtypes(include=[np.number]).columns.tolist()
-    ignore_set = set(ignore)
-    return [column for column in numeric_columns if column not in ignore_set]
-
-
-def _write_metric_plots(frame: pd.DataFrame, output_dir: Path) -> None:
-    metrics = _select_numeric_metrics(frame, ignore=["beam_size"])
-    if not metrics:
-        print("⚠️  No numeric metrics available for plotting; skipping plot generation.")
-        return
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for metric in metrics:
-        fig, ax = plt.subplots()
-        has_data = False
-
-        for variant, subset in frame.groupby("variant"):
-            subset = subset.sort_values("beam_size")
-            if metric not in subset:
-                continue
-
-            y = pd.to_numeric(subset[metric], errors="coerce")
-            mask = np.isfinite(y.to_numpy())
-            if not mask.any():
-                continue
-
-            has_data = True
-            label_series = subset["description"] if "description" in subset else pd.Series(dtype=str)
-            label = (
-                label_series.dropna().iloc[0]
-                if not label_series.dropna().empty
-                else str(variant)
-            )
-            ax.plot(
-                subset.loc[mask, "beam_size"],
-                y[mask],
-                marker="o",
-                label=label,
-            )
-
-        if not has_data:
-            plt.close(fig)
-            continue
-
-        display_name = metric.replace("_", " ")
-        ax.set_xlabel("Beam size")
-        ax.set_ylabel(display_name.title())
-        ax.set_title(display_name.title())
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
-        ax.legend()
-
-        file_name = f"{_slugify_metric(metric)}.png"
-        fig.savefig(output_dir / file_name, bbox_inches="tight", dpi=200)
-        plt.close(fig)
-
-    print(f"✅ Metric plots written to {output_dir}")
+from bin.eval.plot.sampling_vs_beam import write_publication_quality_plots
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -581,7 +517,7 @@ def main() -> None:
         json.dump(frame.to_dict(orient="records"), fp, indent=2)
     print(f"✅ Summary JSON written to {summary_json_path}")
 
-    _write_metric_plots(
+    write_publication_quality_plots(
         frame,
         output_dir=args.plots_dir or (args.out_root / "plots"),
     )
