@@ -13,9 +13,9 @@
 set -euo pipefail
 
 REPO_DIR=/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer
-COMMIT_HASH='eecc50439c4fe32067840ca7c12a81d7487eb2d6'
+COMMIT_HASH='791bd325f8352e3f1ae9c34cbd6e6cba87eaa767'
 RUN_COMMAND='python bin/conditioning_decoding_sweep.py --model-ckp runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding'
-GENERATED_AT='20251016_101142'
+GENERATED_AT='20251016_101727'
 
 mkdir -p "$WORK/deCIFer/logs"
 
@@ -25,10 +25,10 @@ echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
 module load git
 git checkout $COMMIT_HASH
 
-echo "[Jean Zay helper] Using modules: python/3.11 pytorch-gpu/py3/2.3.0"
+echo "[Jean Zay helper] Using modules: python/3.11  pytorch-gpu/py3/2.2.0"
 module purge
 module load python/3.11
-module load pytorch-gpu/py3/2.3.0
+module load  pytorch-gpu/py3/2.2.0
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
