@@ -1,7 +1,10 @@
+#!/usr/bin/env python3
 """Utilities to generate publication-quality plots for sampling vs beam search sweeps."""
 
 from __future__ import annotations
 
+import argparse
+import json
 from itertools import cycle
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -198,3 +201,81 @@ def write_publication_quality_plots(
         plt.close(fig)
 
     print(f"✅ Metric plots written to {output_dir}")
+
+
+def _load_summary(path: Path) -> pd.DataFrame:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    if suffix in {".json", ".jsonl"}:
+        with path.open("r", encoding="utf-8") as fp:
+            data = json.load(fp)
+        return pd.DataFrame(data)
+    if suffix in {".pkl", ".pkl.gz"}:
+        return pd.read_pickle(path)
+    raise ValueError(
+        "Unsupported summary format. Expected CSV, JSON, or pickle file; "
+        f"received: {path}"
+    )
+
+
+def _parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate publication-quality plots from the outputs of "
+            "bin/eval/sampling_vs_beam_search.py"
+        )
+    )
+    parser.add_argument(
+        "summary_path",
+        type=Path,
+        help="Path to the summary CSV/JSON/pickle file produced by sampling_vs_beam_search.py.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory where plot images will be written. Defaults to <summary_dir>/plots.",
+    )
+    parser.add_argument(
+        "--metrics",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Optional subset of metric columns to plot. Defaults to all numeric metrics.",
+    )
+    parser.add_argument(
+        "--no-annotations",
+        action="store_true",
+        help="Disable point annotations showing metric values.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_arguments()
+
+    frame = _load_summary(args.summary_path)
+    if frame.empty:
+        print(
+            f"⚠️  Summary file {args.summary_path} contains no records; "
+            "skipping plot generation."
+        )
+        return
+
+    output_dir = (
+        args.output_dir
+        if args.output_dir is not None
+        else args.summary_path.with_name("plots")
+    )
+
+    write_publication_quality_plots(
+        frame,
+        output_dir=output_dir,
+        metrics=args.metrics,
+        annotate_points=not args.no_annotations,
+    )
+
+
+if __name__ == "__main__":
+    main()
