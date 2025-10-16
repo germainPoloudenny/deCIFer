@@ -113,6 +113,16 @@ def main() -> None:
     partition = partition_info["partition"]
     account = args.account or GPU_DEFAULT_ACCOUNTS.get(args.gpu_type)
 
+    if account and "@" in account:
+        _, _, account_gpu_suffix = account.partition("@")
+        if account_gpu_suffix and account_gpu_suffix != args.gpu_type:
+            raise SystemExit(
+                "The requested GPU type does not match the provided account. "
+                f"Account '{account}' cannot be used with GPU type "
+                f"'{args.gpu_type}'. Please pass a matching --gpu-type or "
+                "--account."
+            )
+
     output_path: pathlib.Path = args.output
     if not output_path.parent.exists():
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +140,7 @@ def main() -> None:
         f"#SBATCH --gres={gres}",
     ]
     if account:
-        header_lines.append(f"#SBATCH -A {account}")
+        header_lines.append(f"#SBATCH --account={account}")
     header_lines.extend(
         [
             f"#SBATCH --time={args.time}",
