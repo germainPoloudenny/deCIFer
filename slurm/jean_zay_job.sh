@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=decifer
+#SBATCH --job-name=task
 #SBATCH --partition=gpu_p6
 #SBATCH --constraint=h100
 #SBATCH --gres=gpu:1
 #SBATCH --account=nxk@h100
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/decifer_%j.out
+#SBATCH --output=logs/task.out
 #SBATCH --ntasks-per-node=1
 #SBATCH --hint=nomultithread
 
@@ -13,9 +13,9 @@
 set -euo pipefail
 
 REPO_DIR=/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer
-COMMIT_HASH='791bd325f8352e3f1ae9c34cbd6e6cba87eaa767'
+COMMIT_HASH='075878ed5b0f48ba1615660901d3c59ba8a5f99e'
 RUN_COMMAND='python bin/conditioning_decoding_sweep.py --model-ckp runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding'
-GENERATED_AT='20251016_101727'
+GENERATED_AT='20251016_101947'
 
 mkdir -p "$WORK/deCIFer/logs"
 
@@ -25,9 +25,8 @@ echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
 module load git
 git checkout $COMMIT_HASH
 
-echo "[Jean Zay helper] Using modules: python/3.11  pytorch-gpu/py3/2.2.0"
+echo "[Jean Zay helper] Using modules:  pytorch-gpu/py3/2.2.0"
 module purge
-module load python/3.11
 module load  pytorch-gpu/py3/2.2.0
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
