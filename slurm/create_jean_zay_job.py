@@ -164,7 +164,7 @@ def main() -> None:
         [
             f"#SBATCH --time={args.time}",
            
-            f"#SBATCH  --output=/gpfsscratch/rech/nxk/uvv78gt/deCIFer/logs/decifer_%j.out",
+            f"#SBATCH  --output=/gpfsscratch/rech/nxk/uvv78gt/deCIFer/logs/decifer.out",
             f"#SBATCH --ntasks-per-node=1",
             f"#SBATCH --hint=nomultithread",
             "",
