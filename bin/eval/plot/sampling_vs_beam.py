@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from itertools import cycle
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -32,16 +33,24 @@ plt.rcParams.update(
 )
 
 
-_AXIS_LABEL_OVERRIDES = {
-    "rmsd_match_count": ("Beam size", "RMSD Match Count"),
-}
+@dataclass(frozen=True)
+class MetricLayout:
+    """Container describing how to render a metric on a line plot."""
 
-_TITLE_OVERRIDES = {
-    "rmsd_match_count": "Impact of Beam Size on Structural Matching",
-}
+    title: str
+    x_label: str = "Beam size"
+    y_label: Optional[str] = None
+    legend_title: Optional[str] = None
+    prefer_integer_ticks: bool = False
 
-_LEGEND_TITLES = {
-    "rmsd_match_count": "Variant (higher is better)",
+
+_METRIC_LAYOUT_OVERRIDES = {
+    "rmsd_match_count": MetricLayout(
+        title="Impact of Beam Size on Structural Matching",
+        y_label="RMSD match count (higher is better)",
+        legend_title="Variant",
+        prefer_integer_ticks=True,
+    ),
 }
 
 _COLOR_OVERRIDES = {
@@ -129,7 +138,7 @@ def write_publication_quality_plots(
     color_map, marker_map = _prepare_style_iterables(frame)
 
     for metric in metric_names:
-        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+        fig, ax = plt.subplots(figsize=(6.8, 4.4))
         has_data = False
 
         for variant, subset in frame.groupby("variant"):
@@ -157,10 +166,10 @@ def write_publication_quality_plots(
                 subset.loc[mask, "beam_size"],
                 y[mask],
                 marker=marker,
-                linewidth=2,
-                markersize=7,
+                linewidth=2.3,
+                markersize=8,
                 color=color,
-                label=label if metric != "rmsd_match_count" else f"{label} (higher is better)",
+                label=label,
             )
 
             if annotate_points:
@@ -168,12 +177,18 @@ def write_publication_quality_plots(
                     ax.annotate(
                         _format_annotation(float(y_val)),
                         xy=(x_val, y_val),
-                        xytext=(0, 8),
+                        xytext=(0, 9),
                         textcoords="offset points",
                         ha="center",
                         va="bottom",
                         fontsize=10,
-                        color=color,
+                        color="#1a1a1a",
+                        bbox={
+                            "boxstyle": "round,pad=0.2",
+                            "fc": "white",
+                            "ec": "none",
+                            "alpha": 0.9,
+                        },
                     )
 
         if not has_data:
@@ -181,18 +196,35 @@ def write_publication_quality_plots(
             continue
 
         display_name = metric.replace("_", " ")
-        xlabel, ylabel = _AXIS_LABEL_OVERRIDES.get(metric, ("Beam size", display_name.title()))
-        title = _TITLE_OVERRIDES.get(metric, display_name.title())
-        legend_title = _LEGEND_TITLES.get(metric)
+        layout = _METRIC_LAYOUT_OVERRIDES.get(
+            metric,
+            MetricLayout(title=display_name.title(), y_label=display_name.title()),
+        )
+
+        xlabel = layout.x_label
+        ylabel = layout.y_label or display_name.title()
+        title = layout.title
+        legend_title = layout.legend_title
 
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.4)
+        ax.grid(True, which="both", linestyle="--", linewidth=0.6, alpha=0.5)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-        ax.legend(title=legend_title, frameon=False)
+        if layout.prefer_integer_ticks:
+            ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+
+        legend = ax.legend(
+            title=legend_title,
+            frameon=False,
+            handlelength=2.5,
+            handletextpad=0.8,
+            loc="best",
+        )
+        if legend is not None and legend.get_title() is not None:
+            legend.get_title().set_fontweight("bold")
 
         fig.tight_layout()
 

@@ -78,17 +78,6 @@ def parse_args() -> argparse.Namespace:
         help="Wall clock limit in HH:MM:SS (default: 12 hours).",
     )
     parser.add_argument(
-        "--cpus",
-        type=int,
-        default=8,
-        help="Number of CPUs to request per task.",
-    )
-    parser.add_argument(
-        "--mem",
-        default="64G",
-        help="Amount of memory to request (e.g. 64G).",
-    )
-    parser.add_argument(
         "--modules",
         nargs="*",
         default=["python/3.11", "pytorch-gpu/py3/2.3.0"],
