@@ -150,7 +150,6 @@ def main() -> None:
         "#!/bin/bash",
         f"#SBATCH --job-name={args.job_name}",
         f"#SBATCH --partition={partition}",
-        f"#SBATCH --gres={gres}",
     ]
     if account:
         header_lines.append(f"#SBATCH --account={account}")
