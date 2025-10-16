@@ -51,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gpu-type",
         choices=sorted(GPU_PARTITIONS),
-        default="h100",
-        help="GPU type to request on Jean Zay.",
+        default=None,
+        help="GPU type to request on Jean Zay (default: h100).",
     )
     parser.add_argument(
         "--account",
@@ -108,20 +108,33 @@ def main() -> None:
     repo_root = pathlib.Path(run_git_command("rev-parse", "--show-toplevel"))
     commit_hash = run_git_command("rev-parse", "HEAD")
 
-    partition_info = GPU_PARTITIONS[args.gpu_type]
-    gres = partition_info["gres"]
-    partition = partition_info["partition"]
-    account = args.account or GPU_DEFAULT_ACCOUNTS.get(args.gpu_type)
+    gpu_type = args.gpu_type or "h100"
+    account = args.account
 
+    account_gpu_suffix = None
     if account and "@" in account:
         _, _, account_gpu_suffix = account.partition("@")
-        if account_gpu_suffix and account_gpu_suffix != args.gpu_type:
+        if account_gpu_suffix and account_gpu_suffix not in GPU_PARTITIONS:
             raise SystemExit(
-                "The requested GPU type does not match the provided account. "
-                f"Account '{account}' cannot be used with GPU type "
-                f"'{args.gpu_type}'. Please pass a matching --gpu-type or "
-                "--account."
+                f"Account '{account}' references unsupported GPU type "
+                f"'{account_gpu_suffix}'."
             )
+
+    if args.gpu_type is None and account_gpu_suffix:
+        gpu_type = account_gpu_suffix
+
+    if account_gpu_suffix and account_gpu_suffix != gpu_type:
+        raise SystemExit(
+            "The requested GPU type does not match the provided account. "
+            f"Account '{account}' cannot be used with GPU type '{gpu_type}'. "
+            "Please pass a matching --gpu-type or --account."
+        )
+
+    partition_info = GPU_PARTITIONS[gpu_type]
+    gres = partition_info["gres"]
+    partition = partition_info["partition"]
+    if account is None:
+        account = GPU_DEFAULT_ACCOUNTS.get(gpu_type)
 
     output_path: pathlib.Path = args.output
     if not output_path.parent.exists():
