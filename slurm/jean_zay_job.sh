@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
-source "$WORK/venvs/decifer/bin/activate" 2>/dev/null || true
+source "$WORK/venvs/decifer/bin/activate"
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
