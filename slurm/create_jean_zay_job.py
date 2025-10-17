@@ -212,7 +212,6 @@ cleanup() {{
 trap cleanup EXIT
 
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
-conda activate decifer
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
