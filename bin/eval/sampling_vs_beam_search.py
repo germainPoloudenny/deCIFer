@@ -189,7 +189,7 @@ def _add_common_evaluate_args(
 ) -> None:
     command.extend(
         [
-            "bin/evaluate.py",
+            "bin/eval/evaluate.py",
             "--model-ckpt",
             str(args.model_ckpt),
             "--dataset-path",
@@ -291,7 +291,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--nproc-per-node",
         type=int,
-        default=1,
+        default=2,
         help="Passed to torchrun --nproc_per_node.",
     )
     parser.add_argument(
@@ -400,7 +400,7 @@ def _run_baseline(
 
         collect_cmd = [
             sys.executable,
-            "bin/collect_evaluations.py",
+            "bin/eval/collect_evaluations.py",
             "--eval-folder-paths",
             str(eval_files_dir),
             "--output-folder",
