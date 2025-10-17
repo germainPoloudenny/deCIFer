@@ -214,9 +214,7 @@ trap cleanup EXIT
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate"
 
-echo "After activation — which python: $(which python)"
-python -c "import sys; print('executable =', sys.executable); print('sys.path =', sys.path)"
-python -c "import pymatgen; print('pymatgen imported, version =', pymatgen.__version__)"
+export PATH="$WORK/venvs/decifer/bin:$PATH"
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
