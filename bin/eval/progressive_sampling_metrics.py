@@ -8,7 +8,7 @@ import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -339,7 +339,10 @@ def _build_clean_kwargs(args: argparse.Namespace) -> Dict[str, object]:
     }
 
 
-def _run_progressive_evaluation(args: argparse.Namespace) -> Optional[pd.DataFrame]:
+def _run_progressive_evaluation(
+    args: argparse.Namespace,
+    milestone_callback: Optional[Callable[[Dict[str, float]], None]] = None,
+) -> Optional[pd.DataFrame]:
     requested_device = "cpu" if (args.device == "cuda" and not torch.cuda.is_available()) else args.device
 
     dist_config = SimpleNamespace(
@@ -375,6 +378,16 @@ def _run_progressive_evaluation(args: argparse.Namespace) -> Optional[pd.DataFra
     )
 
     records: List[Dict[str, object]] = []
+    local_summaries: List[Dict[str, float]] = []
+
+    milestone_iter: Optional[Iterator[int]] = None
+    next_milestone: Optional[int] = None
+    if not use_distributed:
+        milestone_iter = iter(_compute_milestones(len(dataset), base=args.milestone_base))
+        try:
+            next_milestone = next(milestone_iter)
+        except StopIteration:
+            next_milestone = None
     progress = tqdm(
         total=samples_for_rank,
         desc="Sampling",
@@ -420,6 +433,19 @@ def _run_progressive_evaluation(args: argparse.Namespace) -> Optional[pd.DataFra
         record["index"] = float(index)
         records.append(record)
 
+        if not use_distributed and next_milestone is not None and len(records) == next_milestone:
+            summary = _summarise_records(records)
+            summary["samples"] = float(len(records))
+            summary["milestone"] = float(len(records))
+            local_summaries.append(summary)
+            if milestone_callback is not None:
+                milestone_callback(summary)
+            assert milestone_iter is not None
+            try:
+                next_milestone = next(milestone_iter)
+            except StopIteration:
+                next_milestone = None
+
         progress.update(1)
 
     progress.close()
@@ -435,14 +461,21 @@ def _run_progressive_evaluation(args: argparse.Namespace) -> Optional[pd.DataFra
     else:
         all_records = records
 
-    if use_distributed and rank != 0:
-        return None
+    if not use_distributed:
+        summaries = local_summaries
+    else:
+        if use_distributed and rank != 0:
+            return None
 
-    summaries = _compute_progressive_summaries(
-        all_records,
-        total_samples=len(dataset),
-        milestone_base=args.milestone_base,
-    )
+        summaries = _compute_progressive_summaries(
+            all_records,
+            total_samples=len(dataset),
+            milestone_base=args.milestone_base,
+        )
+
+        if milestone_callback is not None:
+            for summary in summaries:
+                milestone_callback(summary)
 
     return pd.DataFrame(summaries)
 
@@ -500,10 +533,33 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    summaries = _run_progressive_evaluation(args)
-    if summaries is not None:
+    if output_path.exists():
+        output_path.unlink()
+
+    header_written = False
+    wrote_to_disk = False
+
+    def milestone_callback(summary: Dict[str, float]) -> None:
+        nonlocal header_written, wrote_to_disk
+        frame = pd.DataFrame([summary])
+        mode = "a" if header_written else "w"
+        frame.to_csv(output_path, mode=mode, header=not header_written, index=False)
+        header_written = True
+        wrote_to_disk = True
+        milestone = int(summary.get("milestone", summary.get("samples", 0)))
+        print(f"Recorded progressive metrics for {milestone} samples to {output_path}")
+
+    summaries = _run_progressive_evaluation(args, milestone_callback=milestone_callback)
+    if summaries is not None and not wrote_to_disk:
         summaries.to_csv(output_path, index=False)
+        wrote_to_disk = True
+        if not summaries.empty:
+            header_written = True
+
+    if wrote_to_disk:
         print(f"Saved progressive metrics to {output_path}")
+    elif summaries is not None:
+        print("No progressive metrics were generated.")
 
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
