@@ -214,6 +214,9 @@ trap cleanup EXIT
 # Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 source "$WORK/venvs/decifer/bin/activate"
 
+echo "Which python: $(which python)"
+python -c "import sys; print(sys.executable, sys.path)"
+
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
 
