@@ -211,8 +211,13 @@ cleanup() {{
 
 trap cleanup EXIT
 
-# Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
-source "$WORK/venvs/decifer/bin/activate"
+echo "[Jean Zay helper] Activating venv at $WORK/venvs/decifer"
+if [ -f "$WORK/venvs/decifer/bin/activate" ]; then
+    source "$WORK/venvs/decifer/bin/activate"
+else
+    echo "ERROR: venv activate script not found at $WORK/venvs/decifer/bin/activate" >&2
+    exit 1
+fi
 
 echo "Which python: $(which python)"
 python -c "import sys; print(sys.executable, sys.path)"
