@@ -12,10 +12,10 @@
 
 set -euo pipefail
 
-REPO_DIR='/home/gpoloudenny/Projects/deCIFer'
+REPO_DIR='/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer'
 COMMIT_HASH='e1caccf13acb822fbaf22cdc7b597cc77419dc78'
 ORIGINAL_REF='beam_stoch'
-RUN_COMMAND='torchrun --nproc_per_node 2 /home/gpoloudenny/Projects/deCIFer/bin/eval/evaluate.py --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5 --out-folder runs/deCIFer_cifs_v1_model/conditioning_decoding/max_100/none/k_sampling --dataset-name conditioning_decoding_max_100_none_k_sampling --beam-size 1 --length-penalty 1.0 --max-samples 100 --num-reps 1 --temperature 1.0 --top-k 50'
+RUN_COMMAND='torchrun --nproc_per_node 2 bin/eval/evaluate.py --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5 --out-folder runs/deCIFer_cifs_v1_model/conditioning_decoding/max_100/none/k_sampling --dataset-name conditioning_decoding_max_100_none_k_sampling --beam-size 1 --length-penalty 1.0 --max-samples 100 --num-reps 1 --temperature 1.0 --top-k 50'
 GENERATED_AT='20251016_223303'
 
 mkdir -p "$WORK/deCIFer/logs"
