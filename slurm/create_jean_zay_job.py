@@ -211,16 +211,12 @@ cleanup() {{
 
 trap cleanup EXIT
 
-echo "[Jean Zay helper] Activating venv at $WORK/venvs/decifer"
-if [ -f "$WORK/venvs/decifer/bin/activate" ]; then
-    source "$WORK/venvs/decifer/bin/activate"
-else
-    echo "ERROR: venv activate script not found at $WORK/venvs/decifer/bin/activate" >&2
-    exit 1
-fi
+# Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
+source "$WORK/venvs/decifer/bin/activate"
 
-echo "Which python: $(which python)"
-python -c "import sys; print(sys.executable, sys.path)"
+echo "After activation — which python: $(which python)"
+python -c "import sys; print('executable =', sys.executable); print('sys.path =', sys.path)"
+python -c "import pymatgen; print('pymatgen imported, version =', pymatgen.__version__)"
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
