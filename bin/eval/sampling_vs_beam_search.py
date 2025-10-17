@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -27,7 +28,13 @@ def _run_command(command: Sequence[str], env: Optional[Dict[str, str]] = None) -
     """Run a subprocess command while echoing it to stdout."""
     printable = " ".join(shlex.quote(part) for part in command)
     print(f"→ Running: {printable}")
-    subprocess.run(command, check=True, env=env)
+    merged_env: Dict[str, str]
+    if env is None:
+        merged_env = os.environ.copy()
+    else:
+        merged_env = {**os.environ, **env}
+    merged_env.setdefault("MKL_SERVICE_FORCE_INTEL", "1")
+    subprocess.run(command, check=True, env=merged_env)
 
 
 def _ensure_directory(path: Path) -> None:
@@ -479,7 +486,7 @@ def main() -> None:
 
             collect_cmd = [
                 sys.executable,
-                "bin/collect_evaluations.py",
+                "bin/eval/collect_evaluations.py",
                 "--eval-folder-paths",
                 str(eval_files_dir),
                 "--output-folder",

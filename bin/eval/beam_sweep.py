@@ -329,7 +329,7 @@ def main() -> None:
                 # Aggregate the outputs.
                 collect_cmd = [
                     sys.executable,
-                    "bin/collect_evaluations.py",
+                    "bin/eval/collect_evaluations.py",
                     "--eval-folder-paths",
                     str(eval_files_dir),
                     "--output-folder",
