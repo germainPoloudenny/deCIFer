@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, TypedDict
 
+import h5py
 import pandas as pd
 
 from bin.eval.sampling_vs_beam_search import (
@@ -25,6 +26,42 @@ from bin.eval.plot.beam_vs_rwp_filter import write_beam_vs_rwp_plots
 DEFAULT_BEAM_SIZE = 10
 DEFAULT_NUM_REPS = 10
 DEFAULT_COLLECT_TOP_K = 10
+
+
+def _find_first_dataset(handle: h5py.Group) -> Optional[h5py.Dataset]:
+    """Return the first dataset encountered while walking an HDF5 group tree."""
+
+    for value in handle.values():
+        if isinstance(value, h5py.Dataset):
+            return value
+        if isinstance(value, h5py.Group):
+            nested = _find_first_dataset(value)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _infer_dataset_total_samples(dataset_path: Path) -> int:
+    """Infer the total number of samples available in the dataset file."""
+
+    with h5py.File(dataset_path, "r") as h5_file:
+        dataset: Optional[h5py.Dataset] = None
+
+        for key in ("cif_tokens", "cif_tokenized", "cif_name"):
+            if key in h5_file:
+                dataset = h5_file[key]
+                break
+
+        if dataset is None:
+            dataset = _find_first_dataset(h5_file)
+
+        if dataset is None:
+            raise ValueError(
+                f"Unable to determine dataset length from {dataset_path}. "
+                "The file does not contain any HDF5 datasets."
+            )
+
+        return len(dataset)
 
 
 class VariantConfig(TypedDict):
@@ -47,6 +84,7 @@ def _add_common_evaluate_args(
     out_folder: Path,
     beam_size: int,
     num_reps: Optional[str],
+    max_samples: Optional[int],
 ) -> None:
     command.extend(
         [
@@ -61,10 +99,11 @@ def _add_common_evaluate_args(
             dataset_name,
             "--beam-size",
             str(beam_size),
-            "--max-samples",
-            str(args.max_samples),
         ]
     )
+
+    if max_samples is not None:
+        command.extend(["--max-samples", str(max_samples)])
 
     if num_reps is not None:
         command.extend(["--num-reps", num_reps])
@@ -87,6 +126,7 @@ def _prepare_summary_record(
     metrics: Dict[str, object],
     eval_folder: Path,
     pickle_path: Path,
+    max_samples: int,
 ) -> Record:
     num_reps_value: Optional[int]
     if variant["num_reps"] is None:
@@ -103,7 +143,7 @@ def _prepare_summary_record(
         "evaluate_out_folder": str(eval_folder.parent),
         "eval_files_folder": str(eval_folder),
         "collect_pickle_path": str(pickle_path),
-        "max_samples": args.max_samples,
+        "max_samples": max_samples,
         "nproc_per_node": args.nproc_per_node,
     }
     record.update(metrics)
@@ -160,8 +200,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--max-samples",
         type=int,
-        required=True,
-        help="Number of samples passed to evaluate.py via --max-samples.",
+        default=None,
+        help=(
+            "Number of samples passed to evaluate.py via --max-samples. "
+            "Defaults to evaluating the entire dataset."
+        ),
     )
     parser.add_argument(
         "--model-ckpt",
@@ -258,6 +301,11 @@ def main() -> None:
     args = parse_arguments()
     variants = _build_variants(args)
 
+    if args.max_samples is None:
+        effective_max_samples = _infer_dataset_total_samples(args.dataset_path)
+    else:
+        effective_max_samples = args.max_samples
+
     summary_path = args.summary_path or (args.out_root / "beam_vs_rwp_summary.csv")
     summary_json_path = (
         args.summary_json_path or (args.out_root / "beam_vs_rwp_summary.json")
@@ -295,6 +343,7 @@ def main() -> None:
                 out_folder=out_folder,
                 beam_size=args.beam_size,
                 num_reps=variant["num_reps"],
+                max_samples=args.max_samples,
             )
             _run_command(evaluate_cmd)
 
@@ -322,6 +371,7 @@ def main() -> None:
             metrics=metrics,
             eval_folder=eval_files_dir,
             pickle_path=pickle_path,
+            max_samples=effective_max_samples,
         )
         records.append(record)
 
