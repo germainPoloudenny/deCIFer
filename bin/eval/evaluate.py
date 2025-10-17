@@ -9,7 +9,7 @@ from queue import Empty
 from glob import glob
 import pickle
 import gzip
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 from warnings import warn
 from types import SimpleNamespace
 
@@ -124,6 +124,56 @@ def extract_prompt_batch(sequences, device, add_composition=True, add_spacegroup
         padded_prompts[i, -prompt_len:] = prompt
 
     return padded_prompts, prompt_lengths
+
+
+def iter_dataset_samples(
+    dataset: DeciferDataset,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+    max_samples: Optional[int] = None,
+) -> Iterator[Tuple[int, Dict[str, Any]]]:
+    """Iterate over a dataset yielding items assigned to the current rank."""
+
+    if world_size < 1:
+        raise ValueError("world_size must be at least 1")
+
+    total_samples = len(dataset) if max_samples is None else min(len(dataset), max_samples)
+
+    for index, sample in enumerate(iter(dataset)):
+        if index >= total_samples:
+            break
+        if world_size > 1 and (index % world_size) != rank:
+            continue
+        yield index, sample
+
+
+def prepare_prompt_and_conditioning(
+    sample: Dict[str, Any],
+    device: torch.device,
+    *,
+    add_composition: bool,
+    add_spacegroup: bool,
+    conditioning_kwargs: Optional[Dict[str, Any]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    """Prepare model prompt and conditioning vectors from a dataset sample."""
+
+    prompt = extract_prompt(
+        sample["cif_tokens"],
+        device,
+        add_composition=add_composition,
+        add_spacegroup=add_spacegroup,
+    ).unsqueeze(0)
+
+    conditioning_kwargs = conditioning_kwargs or {}
+    xrd_input = discrete_to_continuous_xrd(
+        sample["xrd.q"].unsqueeze(0),
+        sample["xrd.iq"].unsqueeze(0),
+        **conditioning_kwargs,
+    )
+    cond_vec = xrd_input["iq"].to(device)
+
+    return prompt, cond_vec, xrd_input
 
 # Function to load model from a checkpoint
 def load_model_from_checkpoint(ckpt_path, device):
@@ -476,13 +526,14 @@ def process_dataset(
     )
     padding_id = Tokenizer().padding_id
 
-    for i, data in enumerate(iter(dataset)):
-        if i >= total_samples:
-            break
+    sample_iterator = iter_dataset_samples(
+        dataset,
+        rank=rank if use_distributed else 0,
+        world_size=world_size if use_distributed else 1,
+        max_samples=total_samples,
+    )
 
-        if use_distributed and (i % world_size) != rank:
-            continue
-
+    for i, data in sample_iterator:
         if debug_max is not None and num_generations >= debug_max:
             break
 
@@ -492,16 +543,16 @@ def process_dataset(
             pbar.update(1)
             continue
 
-        prompt = None if model is None else extract_prompt(
-            data['cif_tokens'], model.device, add_composition, add_spacegroup
-        ).unsqueeze(0)
-
-        xrd_input, cond_vec, cif_token_gen = None, None, None
-        if prompt is not None:
-            xrd_input = discrete_to_continuous_xrd(
-                data['xrd.q'].unsqueeze(0), data['xrd.iq'].unsqueeze(0), **(xrd_augmentation_dict or {})
+        prompt = cond_vec = xrd_input = None
+        cif_token_gen = None
+        if model is not None:
+            prompt, cond_vec, xrd_input = prepare_prompt_and_conditioning(
+                data,
+                model.device,
+                add_composition=add_composition,
+                add_spacegroup=add_spacegroup,
+                conditioning_kwargs=xrd_augmentation_dict or {},
             )
-            cond_vec = xrd_input['iq'].to(model.device)
             try:
                 if beam_size > 1:
                     cif_token_gen_tensor = model.generate_beam_search(

@@ -7,11 +7,13 @@ import argparse
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.distributed as dist
 from scipy.stats import wasserstein_distance
 from tqdm.auto import tqdm
 
@@ -24,15 +26,16 @@ if str(REPO_ROOT) not in sys.path:
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
 from bin.eval.evaluate import (  # pylint: disable=wrong-import-position
-    extract_prompt,
     get_cif_statistics,
+    iter_dataset_samples,
     load_model_from_checkpoint,
+    prepare_prompt_and_conditioning,
 )
+from bin.train import setup_distributed
 from decifer.decifer_dataset import DeciferDataset
 from decifer.decifer_model import Decifer
 from decifer.tokenizer import Tokenizer
 from decifer.utility import (
-    discrete_to_continuous_xrd,
     generate_continuous_xrd_from_cif,
     get_rmsd,
     is_sensible,
@@ -148,6 +151,43 @@ def _summarise_records(records: List[Dict[str, object]]) -> Dict[str, float]:
         summary[f"{column}_count"] = float(stats["count"])
 
     return summary
+
+
+def _compute_progressive_summaries(
+    records: List[Dict[str, object]],
+    total_samples: int,
+    milestone_base: int,
+) -> List[Dict[str, float]]:
+    """Aggregate progressive summaries from evaluation records."""
+
+    if total_samples <= 0 or not records:
+        return []
+
+    milestones = _compute_milestones(total_samples, base=milestone_base)
+    if not milestones:
+        return []
+
+    summaries: List[Dict[str, float]] = []
+    progressive_records: List[Dict[str, object]] = []
+    milestone_iter = iter(milestones)
+    try:
+        next_milestone = next(milestone_iter)
+    except StopIteration:
+        return []
+
+    for record in sorted(records, key=lambda item: item.get("index", math.inf)):
+        progressive_records.append(record)
+        while len(progressive_records) >= next_milestone:
+            summary = _summarise_records(progressive_records)
+            summary["samples"] = float(len(progressive_records))
+            summary["milestone"] = float(len(progressive_records))
+            summaries.append(summary)
+            try:
+                next_milestone = next(milestone_iter)
+            except StopIteration:
+                next_milestone = math.inf
+
+    return summaries
 
 
 def _evaluate_generation(
@@ -299,12 +339,18 @@ def _build_clean_kwargs(args: argparse.Namespace) -> Dict[str, object]:
     }
 
 
-def _run_progressive_evaluation(args: argparse.Namespace) -> pd.DataFrame:
-    if args.device == "cuda" and not torch.cuda.is_available():
-        device_str = "cpu"
-    else:
-        device_str = args.device
-    device = torch.device(device_str)
+def _run_progressive_evaluation(args: argparse.Namespace) -> Optional[pd.DataFrame]:
+    requested_device = "cpu" if (args.device == "cuda" and not torch.cuda.is_available()) else args.device
+
+    dist_config = SimpleNamespace(
+        device=requested_device,
+        distributed=args.distributed,
+        dist_backend=args.dist_backend,
+        dist_url=args.dist_url,
+    )
+    use_distributed, world_size, rank, _ = setup_distributed(dist_config)
+    device = torch.device(dist_config.device)
+
     model: Decifer = load_model_from_checkpoint(args.model_ckpt, device)
     model.eval()
     torch.set_grad_enabled(False)
@@ -319,35 +365,36 @@ def _run_progressive_evaluation(args: argparse.Namespace) -> pd.DataFrame:
 
     conditioning_kwargs = _build_conditioning_kwargs(args)
     clean_kwargs = _build_clean_kwargs(args)
-
-    milestones = _compute_milestones(len(dataset), base=args.milestone_base)
-    milestone_iter = iter(milestones)
-    try:
-        next_milestone = next(milestone_iter)
-    except StopIteration:
-        next_milestone = math.inf
-
-    records: List[Dict[str, object]] = []
-    summaries: List[Dict[str, float]] = []
     top_k_value = args.top_k if args.top_k is None or args.top_k > 0 else None
 
-    progress = tqdm(total=len(dataset), desc="Sampling", disable=args.no_progress or len(dataset) == 0)
-    for index in range(len(dataset)):
-        sample = dataset[index]
-        tokens = sample["cif_tokens"]
-        prompt = extract_prompt(
-            tokens,
+    total_samples = len(dataset)
+    samples_for_rank = (
+        max((total_samples - rank + world_size - 1) // world_size, 0)
+        if use_distributed
+        else total_samples
+    )
+
+    records: List[Dict[str, object]] = []
+    progress = tqdm(
+        total=samples_for_rank,
+        desc="Sampling",
+        disable=args.no_progress or samples_for_rank == 0,
+    )
+
+    sample_iterator = iter_dataset_samples(
+        dataset,
+        rank=rank if use_distributed else 0,
+        world_size=world_size if use_distributed else 1,
+    )
+
+    for index, sample in sample_iterator:
+        prompt, cond_vec, _ = prepare_prompt_and_conditioning(
+            sample,
             device,
             add_composition=args.add_composition,
             add_spacegroup=args.add_spacegroup,
-        ).unsqueeze(0)
-
-        xrd_input = discrete_to_continuous_xrd(
-            sample["xrd.q"].unsqueeze(0),
-            sample["xrd.iq"].unsqueeze(0),
-            **conditioning_kwargs,
+            conditioning_kwargs=conditioning_kwargs,
         )
-        cond_vec = xrd_input["iq"].to(device)
 
         with torch.no_grad():
             generated_tensor = model.generate_batched_reps(
@@ -375,17 +422,28 @@ def _run_progressive_evaluation(args: argparse.Namespace) -> pd.DataFrame:
 
         progress.update(1)
 
-        if len(records) >= next_milestone or index == len(dataset) - 1:
-            summary = _summarise_records(records)
-            summary["samples"] = float(len(records))
-            summary["milestone"] = float(len(records))
-            summaries.append(summary)
-            try:
-                next_milestone = next(milestone_iter)
-            except StopIteration:
-                next_milestone = math.inf
-
     progress.close()
+
+    if use_distributed:
+        gathered_records: Optional[List[List[Dict[str, object]]]]
+        gathered_records = [None] * world_size if rank == 0 else None
+        dist.gather_object(records, gathered_records, dst=0)
+        all_records: List[Dict[str, object]] = []
+        if rank == 0 and gathered_records is not None:
+            for worker_records in gathered_records:
+                all_records.extend(worker_records or [])
+    else:
+        all_records = records
+
+    if use_distributed and rank != 0:
+        return None
+
+    summaries = _compute_progressive_summaries(
+        all_records,
+        total_samples=len(dataset),
+        milestone_base=args.milestone_base,
+    )
+
     return pd.DataFrame(summaries)
 
 
@@ -400,6 +458,21 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--dataset-path", required=True, help="Path to the test dataset (HDF5).")
     parser.add_argument("--output", default="progressive_metrics.csv", help="Destination CSV file for metrics.")
     parser.add_argument("--device", default="cuda", help="Device to use for inference (cuda or cpu).")
+    parser.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Enable distributed multi-GPU evaluation.",
+    )
+    parser.add_argument(
+        "--dist-backend",
+        default="nccl",
+        help="Distributed backend to use when running with --distributed.",
+    )
+    parser.add_argument(
+        "--dist-url",
+        default="env://",
+        help="Initialization URL for torch.distributed when running with --distributed.",
+    )
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature.")
     parser.add_argument("--top-k", type=int, default=50, help="Top-k value for sampling.")
     parser.add_argument("--max-new-tokens", type=int, default=256, help="Maximum number of tokens to generate.")
@@ -428,8 +501,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     summaries = _run_progressive_evaluation(args)
-    summaries.to_csv(output_path, index=False)
-    print(f"Saved progressive metrics to {output_path}")
+    if summaries is not None:
+        summaries.to_csv(output_path, index=False)
+        print(f"Saved progressive metrics to {output_path}")
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

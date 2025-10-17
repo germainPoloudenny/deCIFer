@@ -1,1 +1,1 @@
-python bin/eval/progressive_sampling_metrics.py --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5
+torchrun --nproc_per_node=2    bin/eval/progressive_sampling_metrics.py --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt  --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5
