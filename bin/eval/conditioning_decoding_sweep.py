@@ -23,11 +23,11 @@ COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
 Record = Dict[str, object]
 
 MAX_SAMPLE_GRID: Sequence[Optional[int]] = (
-    1000
-    # 10_000,
-    # 100_000,
-    # 1_000_000,
-    # None,
+    1000,
+    10_000,
+    100_000,
+    1_000_000,
+    None,
 )
 
 
