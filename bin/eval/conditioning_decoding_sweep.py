@@ -22,13 +22,7 @@ COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
 
 Record = Dict[str, object]
 
-MAX_SAMPLE_GRID: Sequence[Optional[int]] = (
-    1000,
-    10_000,
-    100_000,
-    1_000_000,
-    None,
-)
+MAX_SAMPLE_GRID = 1000
 
 
 def _format_max_samples(max_samples: Optional[int]) -> str:
@@ -385,97 +379,97 @@ def main() -> None:
     records: List[Record] = []
     condition_variants = _build_condition_variants()
 
-    for max_samples in MAX_SAMPLE_GRID:
-        decoding_variants = _build_decoding_variants(
-            args.beam_size,
-            sampling_top_k=args.sampling_top_k,
-            collect_top_k=max_samples,
-        )
-        max_samples_label = _format_max_samples(max_samples)
+    max_samples = MAX_SAMPLE_GRID
+    decoding_variants = _build_decoding_variants(
+        args.beam_size,
+        sampling_top_k=args.sampling_top_k,
+        collect_top_k=max_samples,
+    )
+    max_samples_label = _format_max_samples(max_samples)
 
-        for condition in condition_variants:
-            for decoding in decoding_variants:
-                dataset_name = (
-                    f"{args.dataset_name_prefix}_max_{max_samples_label}_{condition.key}_{decoding.key}"
+    for condition in condition_variants:
+        for decoding in decoding_variants:
+            dataset_name = (
+                f"{args.dataset_name_prefix}_max_{max_samples_label}_{condition.key}_{decoding.key}"
+            )
+            out_folder = args.out_root / f"max_{max_samples_label}" / condition.key / decoding.key
+            eval_files_dir = out_folder / "eval_files" / dataset_name
+            collect_output_dir = out_folder / "collected"
+            pickle_path = collect_output_dir / f"{dataset_name}.pkl.gz"
+
+            _ensure_directory(out_folder)
+            _ensure_directory(collect_output_dir)
+
+            if args.skip_existing and pickle_path.exists():
+                print(
+                    "⚠️  Skipping max_samples=%s condition=%s decoding=%s (existing %s)."
+                    % (max_samples_label, condition.key, decoding.key, pickle_path)
                 )
-                out_folder = args.out_root / f"max_{max_samples_label}" / condition.key / decoding.key
-                eval_files_dir = out_folder / "eval_files" / dataset_name
-                collect_output_dir = out_folder / "collected"
-                pickle_path = collect_output_dir / f"{dataset_name}.pkl.gz"
-
-                _ensure_directory(out_folder)
-                _ensure_directory(collect_output_dir)
-
-                if args.skip_existing and pickle_path.exists():
-                    print(
-                        "⚠️  Skipping max_samples=%s condition=%s decoding=%s (existing %s)."
-                        % (max_samples_label, condition.key, decoding.key, pickle_path)
-                    )
-                else:
-                    evaluate_cmd: List[str] = list(torchrun_base)
-                    evaluate_cmd.extend(
-                        [
-                            str(EVALUATE_SCRIPT),
-                            "--model-ckpt",
-                            str(args.model_ckpt),
-                            "--dataset-path",
-                            str(args.dataset_path),
-                            "--out-folder",
-                            str(out_folder),
-                            "--dataset-name",
-                            dataset_name,
-                            "--beam-size",
-                            str(decoding.beam_size),
-                            "--length-penalty",
-                            str(args.length_penalty),
-                        ]
-                    )
-
-                    if max_samples is not None:
-                        evaluate_cmd.extend(["--max-samples", str(max_samples)])
-
-                    if decoding.num_reps is not None:
-                        evaluate_cmd.extend(["--num-reps", str(decoding.num_reps)])
-
-                    if decoding.beam_deterministic:
-                        evaluate_cmd.append("--beam-deterministic")
-
-                    evaluate_cmd.extend(condition.evaluate_args)
-                    evaluate_cmd.extend(decoding.evaluate_args)
-
-                    if args.evaluate_extra_args:
-                        evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
-
-                    _run_command(evaluate_cmd)
-
-                    collect_cmd: List[str] = [
-                        sys.executable,
-                        str(COLLECT_SCRIPT),
-                        "--eval-folder-paths",
-                        str(eval_files_dir),
-                        "--output-folder",
-                        str(collect_output_dir),
+            else:
+                evaluate_cmd: List[str] = list(torchrun_base)
+                evaluate_cmd.extend(
+                    [
+                        str(EVALUATE_SCRIPT),
+                        "--model-ckpt",
+                        str(args.model_ckpt),
+                        "--dataset-path",
+                        str(args.dataset_path),
+                        "--out-folder",
+                        str(out_folder),
+                        "--dataset-name",
+                        dataset_name,
+                        "--beam-size",
+                        str(decoding.beam_size),
+                        "--length-penalty",
+                        str(args.length_penalty),
                     ]
-                    collect_cmd.extend(decoding.collect_args)
-                    _run_command(collect_cmd)
-
-                if not pickle_path.exists():
-                    raise FileNotFoundError(
-                        f"Expected collected results at {pickle_path}, but the file does not exist."
-                    )
-
-                metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
-                record = _prepare_record(
-                    args=args,
-                    condition=condition,
-                    decoding=decoding,
-                    metrics=metrics,
-                    dataset_name=dataset_name,
-                    eval_folder=eval_files_dir,
-                    pickle_path=pickle_path,
-                    max_samples=max_samples,
                 )
-                records.append(record)
+
+                if max_samples is not None:
+                    evaluate_cmd.extend(["--max-samples", str(max_samples)])
+
+                if decoding.num_reps is not None:
+                    evaluate_cmd.extend(["--num-reps", str(decoding.num_reps)])
+
+                if decoding.beam_deterministic:
+                    evaluate_cmd.append("--beam-deterministic")
+
+                evaluate_cmd.extend(condition.evaluate_args)
+                evaluate_cmd.extend(decoding.evaluate_args)
+
+                if args.evaluate_extra_args:
+                    evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
+
+                _run_command(evaluate_cmd)
+
+                collect_cmd: List[str] = [
+                    sys.executable,
+                    str(COLLECT_SCRIPT),
+                    "--eval-folder-paths",
+                    str(eval_files_dir),
+                    "--output-folder",
+                    str(collect_output_dir),
+                ]
+                collect_cmd.extend(decoding.collect_args)
+                _run_command(collect_cmd)
+
+            if not pickle_path.exists():
+                raise FileNotFoundError(
+                    f"Expected collected results at {pickle_path}, but the file does not exist."
+                )
+
+            metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
+            record = _prepare_record(
+                args=args,
+                condition=condition,
+                decoding=decoding,
+                metrics=metrics,
+                dataset_name=dataset_name,
+                eval_folder=eval_files_dir,
+                pickle_path=pickle_path,
+                max_samples=max_samples,
+            )
+            records.append(record)
 
     if not records:
         print("No records collected; nothing to write.")
