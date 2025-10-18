@@ -122,6 +122,14 @@ def write_progressive_sampling_plots(
         if candidate in frame.columns:
             default_ignore.append(candidate)
 
+    if {"rmsd_count", "samples"}.issubset(frame.columns):
+        rmsd_count = pd.to_numeric(frame["rmsd_count"], errors="coerce")
+        samples = pd.to_numeric(frame["samples"], errors="coerce")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            match_rate = np.where(samples > 0, rmsd_count / samples, np.nan)
+        frame = frame.assign(match_rate=match_rate)
+        default_ignore.append("rmsd_count")
+
     metric_names = (
         list(metrics)
         if metrics is not None
