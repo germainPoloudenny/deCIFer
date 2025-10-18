@@ -125,8 +125,16 @@ def write_progressive_sampling_plots(
     if {"rmsd_count", "samples"}.issubset(frame.columns):
         rmsd_count = pd.to_numeric(frame["rmsd_count"], errors="coerce")
         samples = pd.to_numeric(frame["samples"], errors="coerce")
+        success_count = (
+            pd.to_numeric(frame["success_count"], errors="coerce")
+            if "success_count" in frame.columns
+            else None
+        )
+
+        denominator = success_count if success_count is not None else samples
         with np.errstate(divide="ignore", invalid="ignore"):
-            match_rate = np.where(samples > 0, rmsd_count / samples, np.nan)
+            match_rate = rmsd_count.divide(denominator).where(denominator > 0)
+
         frame = frame.assign(match_rate=match_rate)
         default_ignore.append("rmsd_count")
 
