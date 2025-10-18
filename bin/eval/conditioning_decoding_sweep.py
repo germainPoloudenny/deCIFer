@@ -23,12 +23,11 @@ COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
 Record = Dict[str, object]
 
 MAX_SAMPLE_GRID: Sequence[Optional[int]] = (
-    100,
-    1000,
-    10_000,
-    100_000,
-    1_000_000,
-    None,
+    1000
+    # 10_000,
+    # 100_000,
+    # 1_000_000,
+    # None,
 )
 
 
@@ -302,7 +301,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--beam-size",
         type=int,
-        default=2,
+        default=10,
         help="Beam size used by beam-search configurations.",
     )
     parser.add_argument(
