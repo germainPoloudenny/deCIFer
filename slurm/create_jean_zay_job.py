@@ -176,6 +176,7 @@ def main() -> None:
             f"#SBATCH --output={log_file_name}",
             f"#SBATCH --ntasks-per-node=2",
             f"#SBATCH --hint=nomultithread",
+            f"#SBATCH --cpus-per-task=32",
             "",
         ]
     )

@@ -6,17 +6,17 @@
 #SBATCH --account=nxk@h100
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/task.out
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks-per-node=2
 #SBATCH --hint=nomultithread
 
 
 set -euo pipefail
 
-REPO_DIR='/lustre/fswork/projects/rech/nxk/uvv78gt/deCIFer'
-COMMIT_HASH='e1caccf13acb822fbaf22cdc7b597cc77419dc78'
+REPO_DIR='/home/gpoloudenny/Projects/deCIFer'
+COMMIT_HASH='2c2ce0228ebfabbc5f8b5d98b1060b9761e7e9b1'
 ORIGINAL_REF='beam_stoch'
-RUN_COMMAND='torchrun --nproc_per_node 2 bin/eval/evaluate.py --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5 --out-folder runs/deCIFer_cifs_v1_model/conditioning_decoding/max_100/none/k_sampling --dataset-name conditioning_decoding_max_100_none_k_sampling --beam-size 1 --length-penalty 1.0 --max-samples 100 --num-reps 1 --temperature 1.0 --top-k 50'
-GENERATED_AT='20251016_223303'
+RUN_COMMAND='python bin/eval/beam_vs_rwp_filter.py  --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5 --out-root runs/deCIFer_cifs_v1_model/beam_search_vs_rwp_filter  --max-samples 1000'
+GENERATED_AT='20251019_123329'
 
 mkdir -p "$WORK/deCIFer/logs"
 
@@ -39,13 +39,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-echo "[Jean Zay helper] Activating venv at $WORK/venvs/decifer"
-if [ -f "$WORK/venvs/decifer/bin/activate" ]; then
-    source "$WORK/venvs/decifer/bin/activate"
-else
-    echo "ERROR: venv activate script not found at $WORK/venvs/decifer/bin/activate" >&2
-    exit 1
-fi
+# Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
