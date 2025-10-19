@@ -85,6 +85,13 @@ def setup_distributed(config: "TrainConfig"):
     if config.distributed and env_world_size == 1 and env_rank == 0:
         print("[WARN] Distributed training requested but only one process detected; running in single-process mode.", flush=True)
 
+    local_rank = env_local_rank
+    if use_distributed and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        config.device = f"cuda:{local_rank}"
+    elif config.device.startswith("cuda") and not torch.cuda.is_available():
+        config.device = "cpu"
+
     if use_distributed and not dist.is_initialized():
         dist.init_process_group(backend=config.dist_backend, init_method=config.dist_url)
 
@@ -92,16 +99,13 @@ def setup_distributed(config: "TrainConfig"):
         world_size = dist.get_world_size()
         rank = dist.get_rank()
         local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            config.device = f"cuda:{local_rank}"
     else:
         world_size = 1
         rank = env_rank
         local_rank = env_local_rank
-
-    if use_distributed and torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        config.device = f"cuda:{local_rank}"
-    elif config.device.startswith("cuda") and not torch.cuda.is_available():
-        config.device = "cpu"
 
     return use_distributed, world_size, rank, local_rank
 
