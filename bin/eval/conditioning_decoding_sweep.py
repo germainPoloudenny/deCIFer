@@ -220,7 +220,7 @@ def _build_decoding_variants(
             beam_size=1,
             num_reps=1,
             beam_deterministic=False,
-            evaluate_args=("--temperature", "1.0", "--top-k", str(sampling_top_k)),
+            evaluate_args=("--temperature", "1.0", "--top-k", str(1)),
             collect_args=(),
         ),
         DecodingVariant(
@@ -239,7 +239,7 @@ def _build_decoding_variants(
             num_reps=beam_size,
             beam_deterministic=True,
             evaluate_args=(),
-            collect_args=("--top-k", str(collect_top_k)) if collect_top_k is not None else (),
+            collect_args=("--top-k", str(1)) if collect_top_k is not None else (),
         ),
     ]
 

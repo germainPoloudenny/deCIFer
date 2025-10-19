@@ -686,7 +686,16 @@ def main():
     parser.add_argument('--max-new-tokens', type=int, default=1000, help='Maximum number of new tokens to generate.')
     parser.add_argument('--dataset-name', type=str, default='default_dataset', help='Name of the dataset.')
     parser.add_argument('--model-name', type=str, default='default_model', help='Name of the model.')
-    parser.add_argument('--num-reps', type=int, default=1, help='Number of repetitions per sample.')
+    parser.add_argument(
+        '--num-reps',
+        type=int,
+        default=1,
+        help=(
+            'Maximum number of candidates to evaluate per sample. '
+            'Beam search returns at most beam_size sequences, so the effective '
+            'count is min(num_reps, beam_size).'
+        ),
+    )
     parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch.')
     parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD.')
     parser.add_argument('--temperature', type=float, default=1.0, help='')

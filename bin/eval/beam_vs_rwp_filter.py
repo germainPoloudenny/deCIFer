@@ -170,7 +170,7 @@ def _build_variants(
             "dataset_suffix": f"beam{args.beam_size}_rwp_top{collect_top_k}",
             "description": (
                 "Beam search + RWP filter "
-                f"(num_reps={args.num_reps}, top-k={collect_top_k})"
+                f"(num_reps={args.num_reps}, top-k={1})"
             ),
             "num_reps": str(args.num_reps),
             "collect_args": ["--top-k", str(collect_top_k)],

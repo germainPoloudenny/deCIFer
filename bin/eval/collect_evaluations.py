@@ -84,6 +84,11 @@ def process_file(file_path):
         spacegroup_num_gen = int(spacegroup_num_gen) if spacegroup_num_gen is not None else np.nan
 
         out_dict = {
+            'index': row.get('index'),
+            'cif_name': row.get('cif_name'),
+            'rep': row.get('rep'),
+            'dataset_name': row.get('dataset_name'),
+            'model_name': row.get('model_name'),
             'rwp': rwp_value,
             'l2_distance': l2_distance,
             'wd': wd_value,
@@ -137,7 +142,23 @@ def process(folder, debug_max=None, top_k=None, top_k_metric: str = "rwp") -> pd
             metric_column = "l2_distance"
         if metric_column not in df.columns:
             raise ValueError(f"Metric '{top_k_metric}' not available for sorting.")
-        df = df.sort_values(by=metric_column, ascending=True).head(top_k)
+        if 'index' in df.columns:
+            group_column = 'index'
+        elif 'cif_name' in df.columns:
+            group_column = 'cif_name'
+        else:
+            raise ValueError(
+                "Cannot apply per-sample top-k filtering because neither 'index' nor 'cif_name' is present in the data."
+            )
+
+        sort_columns = [group_column, metric_column]
+        if 'rep' in df.columns:
+            sort_columns.append('rep')
+        df = (
+            df.sort_values(by=sort_columns, ascending=True)
+              .groupby(group_column, group_keys=False)
+              .head(top_k)
+        )
 
     return df
 
@@ -147,7 +168,15 @@ if __name__ == "__main__":
     parser.add_argument("--eval-folder-paths", nargs='+', required=True, help="Provide a list of folder paths")
     parser.add_argument("--output-folder", type=str, default='.')
     parser.add_argument("--debug_max", type=int, default=0)
-    parser.add_argument("--top-k", type=int, default=0, help="Keep only the top-K rows with the lowest selected metric (0 disables the filter)")
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=0,
+        help=(
+            "Keep only the top-K rows per sample with the lowest selected metric "
+            "(0 disables the filter)"
+        ),
+    )
     parser.add_argument(
         "--top-k-metric",
         choices=["rwp", "l2"],
