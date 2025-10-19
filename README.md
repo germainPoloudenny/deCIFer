@@ -182,6 +182,7 @@ This step evaluates the model on a test dataset and saves individual `.pkl.gz` e
 - `--temperature <float>`: Sampling temperature for CIF generation.
 - `--top-k <int>`: Top-k filtering during sampling.
 - `--condition`: Use XRD conditioning for generation.
+- `--seed <int>`: Random seed for deterministic sampling (set a negative value to disable seeding).
 
 #### Example Usage:
 

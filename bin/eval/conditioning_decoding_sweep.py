@@ -305,6 +305,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Top-k value used for the sampling configuration.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=1337,
+        help="Seed forwarded to evaluate.py for reproducible sampling.",
+    )
+    parser.add_argument(
         "--length-penalty",
         type=float,
         default=1.0,
@@ -422,6 +428,8 @@ def main() -> None:
                         str(decoding.beam_size),
                         "--length-penalty",
                         str(args.length_penalty),
+                        "--seed",
+                        str(args.seed),
                     ]
                 )
 

@@ -9,6 +9,7 @@ from queue import Empty
 from glob import glob
 import pickle
 import gzip
+import random
 from typing import Any, Dict, Iterator, Optional, Tuple
 from warnings import warn
 from types import SimpleNamespace
@@ -63,6 +64,17 @@ PADDING_ID = TOKENIZER.padding_id
 NEWLINE_ID = TOKENIZER.token_to_id["\n"]
 SPACEGROUP_ID = TOKENIZER.token_to_id["_symmetry_space_group_name_H-M"]
 DECODE = TOKENIZER.decode
+
+
+def set_random_seed(seed: int) -> None:
+    """Seed Python, NumPy and Torch RNGs for reproducible sampling."""
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def extract_prompt(sequence, device, add_composition=True, add_spacegroup=False):
 
@@ -682,6 +694,7 @@ def main():
     parser.add_argument('--beam-size', type=int, default=1, help='Beam width for beam search generation.')
     parser.add_argument('--length-penalty', type=float, default=1.0, help='Length penalty applied during beam search ranking.')
     parser.add_argument('--beam-deterministic', action='store_true', help='Use deterministic beam search (keep top continuations instead of sampling).')
+    parser.add_argument('--seed', type=int, default=1337, help='Seed for Python, NumPy, and Torch RNGs. Set a negative value to disable seeding.')
     parser.add_argument('--add-noise', type=float, default=None, help='')
     parser.add_argument('--add-broadening', type=float, default=None, help='')
     parser.add_argument('--default_fwhm', type=float, default=0.05, help='')
@@ -706,6 +719,12 @@ def main():
         device=args.device,
     )
     use_distributed, world_size, rank, _local_rank = setup_distributed(dist_config)
+
+    if args.seed is not None and args.seed >= 0:
+        set_random_seed(args.seed + rank)
+        if torch.backends.cudnn.is_available():
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
     if not os.path.exists(args.model_ckpt):
         if rank == 0:
