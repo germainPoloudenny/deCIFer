@@ -25,7 +25,7 @@ from bin.eval.plot.beam_vs_rwp_filter import write_beam_vs_rwp_plots
 
 DEFAULT_BEAM_SIZE = 10
 DEFAULT_NUM_REPS = 10
-DEFAULT_COLLECT_TOP_K = 10
+DEFAULT_COLLECT_TOP_K: Optional[int] = None
 
 
 def _find_first_dataset(handle: h5py.Group) -> Optional[h5py.Dataset]:
@@ -105,6 +105,9 @@ def _add_common_evaluate_args(
     if max_samples is not None:
         command.extend(["--max-samples", str(max_samples)])
 
+    if args.seed is not None:
+        command.extend(["--seed", str(args.seed)])
+
     if num_reps is not None:
         command.extend(["--num-reps", num_reps])
 
@@ -150,8 +153,9 @@ def _prepare_summary_record(
     return record
 
 
-def _build_variants(args: argparse.Namespace) -> List[VariantConfig]:
-    dataset_prefix = args.dataset_name_prefix
+def _build_variants(
+    args: argparse.Namespace, *, collect_top_k: int
+) -> List[VariantConfig]:
     return [
         {
             "variant": "beam_top1",
@@ -163,14 +167,14 @@ def _build_variants(args: argparse.Namespace) -> List[VariantConfig]:
         },
         {
             "variant": "beam_rwp",
-            "dataset_suffix": f"beam{args.beam_size}_rwp_top{args.collect_top_k}",
+            "dataset_suffix": f"beam{args.beam_size}_rwp_top{collect_top_k}",
             "description": (
                 "Beam search + RWP filter "
-                f"(num_reps={args.num_reps}, top-k={args.collect_top_k})"
+                f"(num_reps={args.num_reps}, top-k={collect_top_k})"
             ),
             "num_reps": str(args.num_reps),
-            "collect_args": ["--top-k", str(args.collect_top_k)],
-            "collect_top_k": int(args.collect_top_k),
+            "collect_args": ["--top-k", str(collect_top_k)],
+            "collect_top_k": int(collect_top_k),
         },
     ]
 
@@ -195,7 +199,11 @@ def parse_arguments() -> argparse.Namespace:
         "--collect-top-k",
         type=int,
         default=DEFAULT_COLLECT_TOP_K,
-        help="--top-k value forwarded to collect_evaluations.py for the RWP-filtered run.",
+        help=(
+            "Deprecated: --top-k value forwarded to collect_evaluations.py for the "
+            "RWP-filtered run. This script now enforces top-k to match the number of "
+            "evaluated samples."
+        ),
     )
     parser.add_argument(
         "--max-samples",
@@ -278,6 +286,15 @@ def parse_arguments() -> argparse.Namespace:
         help="Optional directory where comparison plots will be written (default: <out-root>/plots).",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=1337,
+        help=(
+            "Seed forwarded to evaluate.py. Set a negative value to disable seeding. "
+            "(default: 1337)."
+        ),
+    )
+    parser.add_argument(
         "--skip-existing",
         action="store_true",
         help="Reuse existing collected pickle files and skip the corresponding commands.",
@@ -299,12 +316,22 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_arguments()
-    variants = _build_variants(args)
 
     if args.max_samples is None:
         effective_max_samples = _infer_dataset_total_samples(args.dataset_path)
     else:
         effective_max_samples = args.max_samples
+
+    collect_top_k = effective_max_samples
+    if args.collect_top_k is not None and args.collect_top_k != collect_top_k:
+        print(
+            "⚠️  Overriding --collect-top-k=%s to match max_samples=%s." % (
+                args.collect_top_k,
+                collect_top_k,
+            )
+        )
+
+    variants = _build_variants(args, collect_top_k=collect_top_k)
 
     summary_path = args.summary_path or (args.out_root / "beam_vs_rwp_summary.csv")
     summary_json_path = (
