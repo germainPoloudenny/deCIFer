@@ -806,18 +806,79 @@ def get_metrics(ckpt_path):
 # and from
 # https://github.com/FrederikLizakJohansen/CrystaLLM/blob/2d130f9d561136a8745ab7568ebcbd69cdac913f/bin/benchmark_metrics.py
 def get_rmsd(cif_string_sample, cif_string_gen, matcher):
-    """ Presumes valid structures or exception is thrown """
+    """Compute the RMSD between two CIF strings using normalized cells when possible.
+
+    The two input structures are first converted, via :class:`SpacegroupAnalyzer`,
+    to a shared conventional or primitive representation before invoking
+    ``StructureMatcher``. If the normalization fails for both options, the raw
+    structures are compared instead. The minimum RMSD returned by
+    :meth:`StructureMatcher.get_rms_dist` across all successful comparisons is
+    reported.
+    """
+
+    def _standardized_variants(struct):
+        """Return conventional and primitive variants of ``struct`` if available."""
+
+        try:
+            analyzer = SpacegroupAnalyzer(struct)
+        except Exception:
+            return []
+
+        variants = []
+        try:
+            variants.append(("primitive", analyzer.get_primitive_standard_structure()))
+        except Exception:
+            pass
+        try:
+            variants.append(("conventional", analyzer.get_conventional_standard_structure()))
+        except Exception:
+            pass
+        try:
+            variants.append(("refined", analyzer.get_refined_structure()))
+        except Exception:
+            pass
+        return [(label, variant) for label, variant in variants if variant is not None]
+
     try:
         structure_sample = Structure.from_str(cif_string_sample, fmt="cif")
         structure_gen = Structure.from_str(cif_string_gen, fmt="cif")
-        rmsd = matcher.get_rms_dist(structure_sample, structure_gen)
-        if rmsd is not None:
-            return rmsd[0] # Mean
-        else:
-            return None
     except Exception as e:
         print(e)
         return None
+
+    candidate_pairs = []
+
+    sample_variants = _standardized_variants(structure_sample)
+    gen_variants = dict(_standardized_variants(structure_gen))
+
+    for label, std_structure in sample_variants:
+        matching_gen_structure = gen_variants.get(label)
+        if matching_gen_structure is not None:
+            candidate_pairs.append((label, std_structure, matching_gen_structure))
+
+    # Fallback to raw structures if no standardized pair succeeds later.
+    candidate_pairs.append(("raw", structure_sample, structure_gen))
+
+    best_rmsd = None
+
+    for label, sample_struct, gen_struct in candidate_pairs:
+        try:
+            rmsd = matcher.get_rms_dist(sample_struct, gen_struct)
+        except Exception:
+            continue
+
+        if rmsd is None:
+            continue
+
+        mean_rmsd = rmsd[0]
+        if best_rmsd is None or mean_rmsd < best_rmsd:
+            best_rmsd = mean_rmsd
+
+        # Early exit if a perfect match is found.
+        if best_rmsd == 0:
+            break
+
+    return best_rmsd
 
 def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset=0.02, plot_metrics=True, figsize=(10, 5)):
     # Apply Seaborn style

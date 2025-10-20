@@ -232,7 +232,9 @@ Each evaluation file contains:
   - Bond length reasonableness
   - Space group consistency
   - Unit cell parameters
-- **Root Mean Square Deviation (RMSD)** from reference structure
+- **Root Mean Square Deviation (RMSD)** from reference structure, computed after
+  standardizing both structures to a shared conventional or primitive cell when
+  possible
 
 ## CIF Generation Consistency Experiment
 
@@ -283,7 +285,9 @@ results/consistency_experiment/
 Each generated CIF is analyzed for structural and diffraction consistency. The following metrics are computed:
 
 - **Residual Weighted Profile (Rwp)**: Measures the difference between the experimental and generated XRD patterns.
-- **Root Mean Square Deviation (RMSD)**: Measures the structural deviation between generated and reference CIFs.
+- **Root Mean Square Deviation (RMSD)**: Measures the structural deviation
+  between generated and reference CIFs after normalizing each structure to a
+  common conventional or primitive representation when available.
 - **Crystal System Consistency**: Checks if the generated structure belongs to the same crystal system as the reference.
 - **Space Group Consistency**: Compares the space group number of the generated structure with the original.
 - **Lattice Parameter Deviations**:
