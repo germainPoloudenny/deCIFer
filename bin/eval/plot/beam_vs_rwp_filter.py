@@ -34,7 +34,7 @@ _DEFAULT_IGNORE_METRICS = {
     "spacegroup_match_total",
     "rmsd_match_total",
     "rwp_match_total",
-    "rmsd_match_rate_ranking",
+    "rmsd_ranking",
     "rwp_match_rate_ranking",
 }
 

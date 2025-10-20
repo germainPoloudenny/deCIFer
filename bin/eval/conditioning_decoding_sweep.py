@@ -200,20 +200,32 @@ def _collect_metrics(
     return metrics
 
 
-def _append_match_rate_rankings(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add ranking columns for match rate metrics when available."""
+def _append_rmsd_rankings(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add a ranking column derived from RMSD values when available."""
 
-    ranking_specs = (
-        ("rmsd_match_rate", "rmsd_match_rate_ranking", False),
-        ("rwp_match_rate", "rwp_match_rate_ranking", False),
-    )
+    if "rmsd" not in frame.columns:
+        return frame
 
-    for metric, column, ascending in ranking_specs:
-        if metric not in frame.columns:
-            continue
-        numeric = pd.to_numeric(frame[metric], errors="coerce")
-        if numeric.notna().any():
-            frame[column] = numeric.rank(method="dense", ascending=ascending).astype("Int64")
+    numeric = pd.to_numeric(frame["rmsd"], errors="coerce")
+    numeric = numeric.replace([np.inf, -np.inf], np.nan)
+    ranking = pd.Series(np.nan, index=frame.index, dtype="float64")
+
+    finite_mask = numeric.notna()
+    if finite_mask.any():
+        ranking.loc[finite_mask] = numeric.loc[finite_mask].rank(method="dense", ascending=True)
+        missing_mask = ~finite_mask
+        if missing_mask.any():
+            max_rank = int(ranking.loc[finite_mask].max())
+            start = max_rank + 1
+            stop = start + int(missing_mask.sum())
+            ranking.loc[missing_mask] = np.arange(start, stop, dtype=float)
+    else:
+        missing_mask = ~finite_mask
+        if missing_mask.any():
+            ranking.loc[missing_mask] = np.arange(1, 1 + int(missing_mask.sum()), dtype=float)
+
+    if ranking.notna().any():
+        frame["rmsd_ranking"] = ranking.astype("Int64")
     return frame
 
 
@@ -521,7 +533,7 @@ def main() -> None:
 
     frame = pd.DataFrame.from_records(records)
     frame = frame.sort_values(by=["max_samples", "conditioning", "decoding"], na_position="last").reset_index(drop=True)
-    frame = _append_match_rate_rankings(frame)
+    frame = _append_rmsd_rankings(frame)
     frame.to_csv(summary_path, index=False)
     print(f"✅ Summary CSV written to {summary_path}")
 
