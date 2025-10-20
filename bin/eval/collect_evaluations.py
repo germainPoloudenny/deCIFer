@@ -179,7 +179,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--top-k-metric",
-        choices=["rwp", "l2"],
+        choices=["rwp", "rmsd", "l2"],
         default="rwp",
         help="Metric used to rank rows when applying --top-k.",
     )

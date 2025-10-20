@@ -246,6 +246,7 @@ def _build_decoding_variants(
     *,
     sampling_top_k: int,
     collect_top_k: Optional[int],
+    collect_top_k_metric: str,
 ) -> List[DecodingVariant]:
     return [
         DecodingVariant(
@@ -273,7 +274,11 @@ def _build_decoding_variants(
             num_reps=beam_size,
             beam_deterministic=True,
             evaluate_args=(),
-            collect_args=("--top-k", str(1)) if collect_top_k is not None else (),
+            collect_args=(
+                ("--top-k", str(1), "--top-k-metric", collect_top_k_metric)
+                if collect_top_k is not None
+                else ()
+            ),
         ),
     ]
 
@@ -303,6 +308,7 @@ def _prepare_record(
         "num_reps": decoding.num_reps,
         "length_penalty": args.length_penalty,
         "nproc_per_node": args.nproc_per_node,
+        "collect_top_k_metric": args.collect_top_k_metric,
     }
     record.update(metrics)
     return record
@@ -378,6 +384,15 @@ def parse_arguments() -> argparse.Namespace:
         help="Extra arguments appended to evaluate.py invocations.",
     )
     parser.add_argument(
+        "--collect-top-k-metric",
+        choices=("rwp", "rmsd", "l2"),
+        default="rwp",
+        help=(
+            "Metric forwarded to collect_evaluations.py when selecting the top-k "
+            "candidates per sample."
+        ),
+    )
+    parser.add_argument(
         "--summary-path",
         type=Path,
         default=None,
@@ -438,6 +453,7 @@ def main() -> None:
         args.beam_size,
         sampling_top_k=args.sampling_top_k,
         collect_top_k=max_samples,
+        collect_top_k_metric=args.collect_top_k_metric,
     )
     max_samples_label = _format_max_samples(max_samples)
 
