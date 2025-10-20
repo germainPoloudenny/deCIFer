@@ -22,7 +22,7 @@ COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
 
 Record = Dict[str, object]
 
-MAX_SAMPLE_GRID = 100
+MAX_SAMPLE_GRID = 1000
 
 
 def _format_max_samples(max_samples: Optional[int]) -> str:
