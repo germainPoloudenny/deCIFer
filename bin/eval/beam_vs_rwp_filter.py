@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import numbers
 import os
 import shlex
 import subprocess
@@ -311,6 +313,15 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional RWP threshold used to count diffractogram matches.",
     )
+    parser.add_argument(
+        "--min-rmsd-match-rate",
+        type=float,
+        default=None,
+        help=(
+            "If provided, skip runs whose RMSD coverage (rmsd_match_rate) falls below this "
+            "value. The threshold is expressed as a ratio between 0 and 1."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -321,6 +332,9 @@ def main() -> None:
         effective_max_samples = _infer_dataset_total_samples(args.dataset_path)
     else:
         effective_max_samples = args.max_samples
+
+    if args.min_rmsd_match_rate is not None and not 0.0 <= args.min_rmsd_match_rate <= 1.0:
+        raise ValueError("--min-rmsd-match-rate must be between 0 and 1.")
 
     collect_top_k = effective_max_samples
     if args.collect_top_k is not None and args.collect_top_k != collect_top_k:
@@ -391,6 +405,20 @@ def main() -> None:
             )
 
         metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
+        match_rate = metrics.get("rmsd_match_rate")
+        if args.min_rmsd_match_rate is not None:
+            if not isinstance(match_rate, numbers.Real) or math.isnan(match_rate) or (
+                match_rate < args.min_rmsd_match_rate
+            ):
+                print(
+                    "⚠️  Skipping variant=%s (rmsd_match_rate=%.3f < %.3f)."
+                    % (
+                        variant["variant"],
+                        float(match_rate) if isinstance(match_rate, numbers.Real) else float("nan"),
+                        args.min_rmsd_match_rate,
+                    )
+                )
+                continue
         record = _prepare_summary_record(
             args,
             beam_size=args.beam_size,

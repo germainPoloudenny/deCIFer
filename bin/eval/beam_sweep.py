@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import numbers
 import shlex
 import subprocess
 import sys
@@ -144,11 +146,16 @@ def _collect_metrics(
 
     if "rmsd" in frame.columns:
         rmsd_stats = _count_with_threshold(frame["rmsd"], rmsd_threshold, lower_is_better=True)
+        num_rows = metrics["num_rows"]
+        if num_rows:
+            coverage_rate = float(rmsd_stats["total"]) / float(num_rows)
+        else:
+            coverage_rate = float("nan")
         metrics.update(
             {
                 "rmsd_match_count": rmsd_stats["count"],
                 "rmsd_match_total": rmsd_stats["total"],
-                "rmsd_match_rate": rmsd_stats["rate"],
+                "rmsd_match_rate": coverage_rate,
                 "rmsd_mean": rmsd_stats["mean"],
                 "rmsd_median": rmsd_stats["median"],
                 "rmsd_std": rmsd_stats["std"],
@@ -279,6 +286,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true", help="Reuse existing collected pickle files and skip the corresponding commands.")
     parser.add_argument("--rmsd-threshold", type=float, default=None, help="Optional RMSD threshold used to count structure matches.")
     parser.add_argument("--rwp-threshold", type=float, default=None, help="Optional RWP threshold used to count diffractogram matches.")
+    parser.add_argument(
+        "--min-rmsd-match-rate",
+        type=float,
+        default=None,
+        help=(
+            "If provided, skip runs whose RMSD coverage (rmsd_match_rate) falls below this "
+            "value. The threshold is expressed as a ratio between 0 and 1."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -286,6 +302,8 @@ def main() -> None:
     args = parse_arguments()
     if args.max_beam_size < 1:
         raise ValueError("--max-beam-size must be at least 1.")
+    if args.min_rmsd_match_rate is not None and not 0.0 <= args.min_rmsd_match_rate <= 1.0:
+        raise ValueError("--min-rmsd-match-rate must be between 0 and 1.")
     beam_sizes = list(range(1, args.max_beam_size + 1))
 
     summary_path = args.summary_path or (args.out_root / "beam_sweep_summary.csv")
@@ -344,6 +362,21 @@ def main() -> None:
                 )
 
             metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
+            match_rate = metrics.get("rmsd_match_rate")
+            if args.min_rmsd_match_rate is not None:
+                if not isinstance(match_rate, numbers.Real) or math.isnan(match_rate) or (
+                    match_rate < args.min_rmsd_match_rate
+                ):
+                    print(
+                        "⚠️  Skipping beam_size=%s variant=%s (rmsd_match_rate=%.3f < %.3f)."
+                        % (
+                            beam_size,
+                            variant["variant"],
+                            float(match_rate) if isinstance(match_rate, numbers.Real) else float("nan"),
+                            args.min_rmsd_match_rate,
+                        )
+                    )
+                    continue
             record = _prepare_summary_records(
                 args,
                 beam_size=beam_size,
