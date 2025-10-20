@@ -54,6 +54,9 @@ def build_config(args: argparse.Namespace) -> GRPOConfig:
     if args.normalize_advantages is not None:
         base.normalize_advantages = args.normalize_advantages
 
+    if args.data_parallel:
+        base.data_parallel = True
+
     if args.add_spacegroup is not None:
         base.add_spacegroup = args.add_spacegroup
 
@@ -96,10 +99,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", dest="learning_rate", type=float, default=None, help="Optimizer learning rate.")
     parser.add_argument("--kl-coef", dest="kl_coef", type=float, default=None, help="KL penalty coefficient.")
     parser.add_argument("--clip-range", dest="clip_range", type=float, default=None, help="PPO clipping range.")
-    parser.add_argument("--target-kl", dest="target_kl", type=float, default=None, help="Early stopping threshold on KL divergence.")
+    parser.add_argument(
+        "--target-kl",
+        dest="target_kl",
+        type=float,
+        default=None,
+        help="Early stopping threshold on average per-token KL divergence.",
+    )
     parser.add_argument("--reward-scale", dest="reward_scale", type=float, default=None, help="Scale factor applied to rewards.")
     parser.add_argument("--invalid-reward", dest="invalid_reward", type=float, default=None, help="Reward assigned to invalid structures.")
     parser.add_argument("--normalize-advantages", dest="normalize_advantages", type=lambda x: x.lower() == "true", default=None, help="Whether to normalise advantages (true/false).")
+    parser.add_argument("--data-parallel", dest="data_parallel", action="store_true", help="Enable torch.nn.DataParallel for multi-GPU GRPO training.")
     parser.add_argument("--max-iterations", dest="max_iterations", type=int, default=None, help="Total GRPO iterations to run.")
     parser.add_argument("--log-interval", dest="log_interval", type=int, default=None, help="Logging interval in iterations.")
     parser.add_argument("--save-interval", dest="save_interval", type=int, default=None, help="Checkpoint interval in iterations.")

@@ -127,6 +127,7 @@ class GRPOConfig:
     reference_checkpoint: Optional[str] = None
     batch_size: int = 2
     group_size: int = 4
+    data_parallel: bool = False
     max_new_tokens: int = 512
     temperature: float = 1.0
     top_k: Optional[int] = None
@@ -371,6 +372,7 @@ class GRPOTrainer:
     def __init__(self, config: GRPOConfig):
         self.config = config
         self.device = config.resolved_device()
+        self.use_data_parallel = self._should_use_data_parallel()
         torch.manual_seed(config.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(config.seed)
@@ -395,13 +397,17 @@ class GRPOTrainer:
 
         self.model, self.model_args = self._load_model(self.config.init_checkpoint)
         self.model.to(self.device)
+        if self.use_data_parallel:
+            self.model = torch.nn.DataParallel(self.model)
         self.model.train()
 
         ref_checkpoint = self.config.reference_checkpoint or self.config.init_checkpoint
         self.reference_model, _ = self._load_model(ref_checkpoint)
         self.reference_model.to(self.device)
+        if self.use_data_parallel:
+            self.reference_model = torch.nn.DataParallel(self.reference_model)
         self.reference_model.eval()
-        for param in self.reference_model.parameters():
+        for param in self._unwrap_model(self.reference_model).parameters():
             param.requires_grad_(False)
 
         self.optimizer = torch.optim.AdamW(
@@ -419,6 +425,17 @@ class GRPOTrainer:
 
         self.iteration = 0
         self.global_step = 0
+
+    def _should_use_data_parallel(self) -> bool:
+        return (
+            self.config.data_parallel
+            and self.device.type == "cuda"
+            and torch.cuda.device_count() > 1
+        )
+
+    @staticmethod
+    def _unwrap_model(model: Decifer) -> Decifer:
+        return model.module if isinstance(model, torch.nn.DataParallel) else model
 
     def _load_model(self, checkpoint_path: str) -> Tuple[Decifer, Dict[str, int]]:
         if not checkpoint_path:
@@ -439,6 +456,10 @@ class GRPOTrainer:
         for key in list(state_dict.keys()):
             if key.startswith(unwanted_prefix):
                 state_dict[key[len(unwanted_prefix) :]] = state_dict.pop(key)
+        dp_prefix = "module."
+        for key in list(state_dict.keys()):
+            if key.startswith(dp_prefix):
+                state_dict[key[len(dp_prefix) :]] = state_dict.pop(key)
         model.load_state_dict(state_dict)
         return model, model_args
 
@@ -528,10 +549,11 @@ class GRPOTrainer:
                 logprobs.append(float(logprob_sum[seq_idx].item()))
 
             rewards_tensor = torch.tensor(group_rewards)
-            baseline = rewards_tensor.mean()
-            advantages = rewards_tensor - baseline
+            scaled_rewards = rewards_tensor * self.config.reward_scale
+            baseline = scaled_rewards.mean()
+            advantages = scaled_rewards - baseline
             if self.config.normalize_advantages:
-                std = rewards_tensor.std(unbiased=False)
+                std = scaled_rewards.std(unbiased=False)
                 if torch.isfinite(std) and std > 1e-6:
                     advantages = advantages / std
 
@@ -544,7 +566,7 @@ class GRPOTrainer:
                         prompt_length=prompt_length,
                         sequence_length=seq_len,
                         old_logprob=logprobs[seq_idx],
-                        reward=group_rewards[seq_idx] * self.config.reward_scale,
+                        reward=float(scaled_rewards[seq_idx].item()),
                         advantage=float(advantages[seq_idx].item()),
                         rmsd=group_rmsd[seq_idx],
                         is_valid=validity[seq_idx],
@@ -620,9 +642,9 @@ class GRPOTrainer:
                 policy_loss = -torch.mean(torch.min(ratios * advantages, clipped * advantages))
 
                 with torch.no_grad():
-                    approx_kl = torch.mean(old_logprobs - logprob_sum)
+                    completion_counts = torch.clamp(completion_mask.sum(dim=1), min=1).to(logprob_sum.dtype)
+                    approx_kl = torch.mean((old_logprobs - logprob_sum) / completion_counts)
                 ref_diff = (logprob_sum - old_logprob_sum)
-                completion_counts = torch.clamp(completion_mask.sum(dim=1), min=1)
                 kl_penalty = torch.mean(ref_diff / completion_counts)
 
                 loss = policy_loss + self.config.kl_coef * kl_penalty
@@ -646,10 +668,11 @@ class GRPOTrainer:
 
     def save_checkpoint(self) -> None:
         checkpoint_path = os.path.join(self.config.out_dir, "grpo_ckpt.pt")
+        model_to_save = self._unwrap_model(self.model)
         torch.save(
             {
                 "model_args": self.model_args,
-                "model_state": self.model.state_dict(),
+                "model_state": model_to_save.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "iteration": self.iteration,
                 "global_step": self.global_step,
