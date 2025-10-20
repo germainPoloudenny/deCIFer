@@ -255,7 +255,7 @@ def _build_decoding_variants(
             beam_size=1,
             num_reps=1,
             beam_deterministic=False,
-            evaluate_args=("--temperature", "1.0", "--top-k", str(1)),
+            evaluate_args=("--temperature", "1.0", "--top-k", str(sampling_top_k)),
             collect_args=(),
         ),
         DecodingVariant(
