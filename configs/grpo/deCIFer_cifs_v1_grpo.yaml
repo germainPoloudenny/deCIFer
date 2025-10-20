@@ -7,7 +7,7 @@ out_dir: runs/grpo/deCIFer_cifs_v1
 
 # Dataset and checkpoints
 # -----------------------
-dataset: ../crystallography/data/structures/cifs_v1/serialized/test.h5
+dataset: '../crystallography/data/structures/cifs_v1'
 init_checkpoint: runs/deCIFer_cifs_v1_model/ckpt_eval.pt
 reference_checkpoint: null
 
