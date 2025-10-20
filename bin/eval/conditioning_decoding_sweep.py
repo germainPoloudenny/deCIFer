@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-import numbers
 import shlex
 import subprocess
 import sys
@@ -202,6 +200,23 @@ def _collect_metrics(
     return metrics
 
 
+def _append_match_rate_rankings(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add ranking columns for match rate metrics when available."""
+
+    ranking_specs = (
+        ("rmsd_match_rate", "rmsd_match_rate_ranking", False),
+        ("rwp_match_rate", "rwp_match_rate_ranking", False),
+    )
+
+    for metric, column, ascending in ranking_specs:
+        if metric not in frame.columns:
+            continue
+        numeric = pd.to_numeric(frame[metric], errors="coerce")
+        if numeric.notna().any():
+            frame[column] = numeric.rank(method="dense", ascending=ascending).astype("Int64")
+    return frame
+
+
 def _build_condition_variants() -> List[ConditionVariant]:
     return [
         ConditionVariant("none", "No conditioning", ()),
@@ -379,15 +394,6 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional RWP threshold used to count diffractogram matches.",
     )
-    parser.add_argument(
-        "--min-rmsd-match-rate",
-        type=float,
-        default=None,
-        help=(
-            "If provided, skip runs whose RMSD coverage (rmsd_match_rate) falls below this "
-            "value. The threshold is expressed as a ratio between 0 and 1."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -397,10 +403,6 @@ def main() -> None:
         raise ValueError("--beam-size must be at least 1.")
     if args.max_samples < 0:
         raise ValueError("--max-samples must be non-negative.")
-    if args.min_rmsd_match_rate is not None:
-        if not 0.0 <= args.min_rmsd_match_rate <= 1.0:
-            raise ValueError("--min-rmsd-match-rate must be between 0 and 1.")
-
     summary_path = args.summary_path or (args.out_root / "conditioning_decoding_summary.csv")
     summary_json_path = args.summary_json_path or (
         args.out_root / "conditioning_decoding_summary.json"
@@ -501,22 +503,6 @@ def main() -> None:
                 )
 
             metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
-            match_rate = metrics.get("rmsd_match_rate")
-            if args.min_rmsd_match_rate is not None:
-                if not isinstance(match_rate, numbers.Real) or math.isnan(match_rate) or (
-                    match_rate < args.min_rmsd_match_rate
-                ):
-                    print(
-                        "⚠️  Skipping max_samples=%s condition=%s decoding=%s (rmsd_match_rate=%.3f < %.3f)."
-                        % (
-                            max_samples_label,
-                            condition.key,
-                            decoding.key,
-                            float(match_rate) if isinstance(match_rate, numbers.Real) else float("nan"),
-                            args.min_rmsd_match_rate,
-                        )
-                    )
-                    continue
             record = _prepare_record(
                 args=args,
                 condition=condition,
@@ -535,6 +521,7 @@ def main() -> None:
 
     frame = pd.DataFrame.from_records(records)
     frame = frame.sort_values(by=["max_samples", "conditioning", "decoding"], na_position="last").reset_index(drop=True)
+    frame = _append_match_rate_rankings(frame)
     frame.to_csv(summary_path, index=False)
     print(f"✅ Summary CSV written to {summary_path}")
 

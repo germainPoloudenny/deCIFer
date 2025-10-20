@@ -148,7 +148,7 @@ def process(folder, debug_max=None, top_k=None, top_k_metric: str = "rwp") -> pd
             group_column = 'cif_name'
         else:
             raise ValueError(
-                "Cannot apply per-sample top-k filtering because neither 'index' nor 'cif_name' is present in the data."
+                "Cannot apply per-sample top-k ranking because neither 'index' nor 'cif_name' is present in the data."
             )
 
         sort_columns = [group_column, metric_column]
@@ -173,8 +173,8 @@ if __name__ == "__main__":
         type=int,
         default=0,
         help=(
-            "Keep only the top-K rows per sample with the lowest selected metric "
-            "(0 disables the filter)"
+            "Rank rows per sample by the selected metric and keep the top-K entries "
+            "per group (0 disables the ranking step)."
         ),
     )
     parser.add_argument(

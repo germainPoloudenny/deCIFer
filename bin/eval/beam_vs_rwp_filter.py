@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Compare standard beam search against beam search with an RWP-based filter."""
+"""Compare standard beam search against beam search with an RWP-based ranking."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import numbers
 import os
 import shlex
 import subprocess
@@ -155,6 +153,23 @@ def _prepare_summary_record(
     return record
 
 
+def _append_match_rate_rankings(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add ranking columns for match rate metrics when available."""
+
+    ranking_specs = (
+        ("rmsd_match_rate", "rmsd_match_rate_ranking", False),
+        ("rwp_match_rate", "rwp_match_rate_ranking", False),
+    )
+
+    for metric, column, ascending in ranking_specs:
+        if metric not in frame.columns:
+            continue
+        numeric = pd.to_numeric(frame[metric], errors="coerce")
+        if numeric.notna().any():
+            frame[column] = numeric.rank(method="dense", ascending=ascending).astype("Int64")
+    return frame
+
+
 def _build_variants(
     args: argparse.Namespace, *, collect_top_k: int
 ) -> List[VariantConfig]:
@@ -171,7 +186,7 @@ def _build_variants(
             "variant": "beam_rwp",
             "dataset_suffix": f"beam{args.beam_size}_rwp_top{collect_top_k}",
             "description": (
-                "Beam search + RWP filter "
+                "Beam search + RWP ranking "
                 f"(num_reps={args.num_reps}, top-k={1})"
             ),
             "num_reps": str(args.num_reps),
@@ -183,7 +198,7 @@ def _build_variants(
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare beam search against beam search filtered by RWP scores.",
+        description="Compare beam search against beam search ranked by RWP scores.",
     )
     parser.add_argument(
         "--beam-size",
@@ -195,7 +210,7 @@ def parse_arguments() -> argparse.Namespace:
         "--num-reps",
         type=int,
         default=DEFAULT_NUM_REPS,
-        help="num_reps value for the RWP-filtered run (default: 10).",
+        help="num_reps value for the RWP-ranked run (default: 10).",
     )
     parser.add_argument(
         "--collect-top-k",
@@ -203,7 +218,7 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_COLLECT_TOP_K,
         help=(
             "Deprecated: --top-k value forwarded to collect_evaluations.py for the "
-            "RWP-filtered run. This script now enforces top-k to match the number of "
+            "RWP-ranked run. This script now enforces top-k to match the number of "
             "evaluated samples."
         ),
     )
@@ -313,15 +328,6 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional RWP threshold used to count diffractogram matches.",
     )
-    parser.add_argument(
-        "--min-rmsd-match-rate",
-        type=float,
-        default=None,
-        help=(
-            "If provided, skip runs whose RMSD coverage (rmsd_match_rate) falls below this "
-            "value. The threshold is expressed as a ratio between 0 and 1."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -332,9 +338,6 @@ def main() -> None:
         effective_max_samples = _infer_dataset_total_samples(args.dataset_path)
     else:
         effective_max_samples = args.max_samples
-
-    if args.min_rmsd_match_rate is not None and not 0.0 <= args.min_rmsd_match_rate <= 1.0:
-        raise ValueError("--min-rmsd-match-rate must be between 0 and 1.")
 
     collect_top_k = effective_max_samples
     if args.collect_top_k is not None and args.collect_top_k != collect_top_k:
@@ -405,20 +408,6 @@ def main() -> None:
             )
 
         metrics = _collect_metrics(pickle_path, args.rmsd_threshold, args.rwp_threshold)
-        match_rate = metrics.get("rmsd_match_rate")
-        if args.min_rmsd_match_rate is not None:
-            if not isinstance(match_rate, numbers.Real) or math.isnan(match_rate) or (
-                match_rate < args.min_rmsd_match_rate
-            ):
-                print(
-                    "⚠️  Skipping variant=%s (rmsd_match_rate=%.3f < %.3f)."
-                    % (
-                        variant["variant"],
-                        float(match_rate) if isinstance(match_rate, numbers.Real) else float("nan"),
-                        args.min_rmsd_match_rate,
-                    )
-                )
-                continue
         record = _prepare_summary_record(
             args,
             beam_size=args.beam_size,
@@ -436,6 +425,7 @@ def main() -> None:
 
     frame = pd.DataFrame.from_records(records)
     frame = frame.sort_values(by=["variant"]).reset_index(drop=True)
+    frame = _append_match_rate_rankings(frame)
     frame.to_csv(summary_path, index=False)
     print(f"✅ Summary CSV written to {summary_path}")
 

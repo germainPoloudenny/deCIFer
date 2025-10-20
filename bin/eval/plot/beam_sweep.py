@@ -3,7 +3,7 @@
 Generate per-metric plots from the artefacts produced by bin/beam_sweep.py.
 
 For each metric collected from the `collected/*.pkl.gz` files, the script
-creates two line plots (beam search normal vs beam search filtered by RWP)
+creates two line plots (beam search normal vs beam search ranked by RWP)
 with the beam size on the x-axis.
 """
 
@@ -43,8 +43,8 @@ VARIANTS: Tuple[VariantConfig, ...] = (
     VariantConfig(directory="top1", label="beam_search_normal", description="Beam search (top-1)."),
     VariantConfig(
         directory="topk",
-        label="beam_search_rwp_filtered",
-        description="Beam search filtered by RWP (top-k from collect_evaluations).",
+        label="beam_search_rwp_ranked",
+        description="Beam search ranked by RWP (top-k from collect_evaluations).",
     ),
 )
 

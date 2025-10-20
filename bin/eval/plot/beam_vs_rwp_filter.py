@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render comparison plots for the beam-vs-RWP-filter experiment."""
+"""Render comparison plots for the beam-vs-RWP-ranking experiment."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ _DEFAULT_IGNORE_METRICS = {
     "spacegroup_match_total",
     "rmsd_match_total",
     "rwp_match_total",
+    "rmsd_match_rate_ranking",
+    "rwp_match_rate_ranking",
 }
 
 
@@ -168,7 +170,7 @@ def _load_frame(path: Path) -> pd.DataFrame:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create plots for the beam vs RWP-filtered comparison summary.",
+        description="Create plots for the beam vs RWP-ranked comparison summary.",
     )
     parser.add_argument(
         "summary_path",
