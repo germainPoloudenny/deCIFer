@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import warnings
 from typing import Any, Dict
 
 from omegaconf import OmegaConf
@@ -16,11 +17,26 @@ def _load_config(path: str) -> Dict[str, Any]:
 
 
 def build_config(args: argparse.Namespace) -> GRPOConfig:
+    base = GRPOConfig()
+
     if args.config is not None:
         cfg_dict = _load_config(args.config)
-        base = GRPOConfig(**cfg_dict)
-    else:
-        base = GRPOConfig()
+        if isinstance(cfg_dict, dict) and "grpo" in cfg_dict and isinstance(cfg_dict["grpo"], dict):
+            cfg_dict = cfg_dict["grpo"]
+
+        unknown_keys = []
+        for key, value in cfg_dict.items():
+            if hasattr(base, key):
+                setattr(base, key, value)
+            else:
+                unknown_keys.append(key)
+
+        if unknown_keys:
+            joined = ", ".join(sorted(unknown_keys))
+            warnings.warn(
+                "Ignoring unrecognised configuration keys: "
+                f"{joined}. GRPO fine-tuning expects a dedicated configuration file."
+            )
 
     for field_name in (
         "out_dir",

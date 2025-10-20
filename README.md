@@ -160,7 +160,9 @@ The script will automatically load the latest checkpoint from the output directo
 
 ### GRPO Fine-Tuning
 
-When performing reinforcement-learning fine-tuning with `bin/train_grpo.py`, the `--reward-scale` argument can be used to adjust the magnitude of the reward signal without modifying the raw scoring function. The scaled reward is applied consistently during rollout collection before computing baselines and advantages, so any change to `--reward-scale` will affect both the stored rewards and the policy update signal.
+When performing reinforcement-learning fine-tuning with `bin/train_grpo.py`, the configuration file should only contain keys understood by `GRPOConfig`. Supervised-training YAML files (e.g. `configs/deCIFer_cifs_v1.yaml`) include options such as `eval_interval` that are ignored by the GRPO trainer and may lead to confusing warnings. A minimal GRPO-specific template is provided at `configs/grpo/deCIFer_cifs_v1_grpo.yaml`; copy or modify it to point at your dataset and checkpoints.
+
+The `--reward-scale` argument can be used to adjust the magnitude of the reward signal without modifying the raw scoring function. The scaled reward is applied consistently during rollout collection before computing baselines and advantages, so any change to `--reward-scale` will affect both the stored rewards and the policy update signal.
 
 ## Evaluation Pipeline
 The evaluation process consists of two main steps: **generating evaluations** for model predictions and **collecting** them into a single file for visualization and analysis.

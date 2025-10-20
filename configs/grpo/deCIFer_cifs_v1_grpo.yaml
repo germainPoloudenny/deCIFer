@@ -1,0 +1,57 @@
+# GRPO fine-tuning configuration for the deCIFer CIFs v1 model.
+#
+# This file intentionally contains only the options recognised by GRPOConfig.
+# It can be used as-is with bin/train_grpo.py or serve as a template for
+# custom reinforcement-learning runs.
+out_dir: runs/grpo/deCIFer_cifs_v1
+
+# Dataset and checkpoints
+# -----------------------
+dataset: ../crystallography/data/structures/cifs_v1/serialized/test.h5
+init_checkpoint: runs/deCIFer_cifs_v1_model/ckpt_eval.pt
+reference_checkpoint: null
+
+# Rollout generation
+# ------------------
+batch_size: 2
+group_size: 4
+max_new_tokens: 512
+temperature: 1.0
+top_k: null
+add_composition: true
+add_spacegroup: false
+conditioning_kwargs: {}
+
+# Optimisation hyperparameters
+# ----------------------------
+learning_rate: 5.0e-06
+betas: [0.9, 0.95]
+weight_decay: 0.1
+grad_clip: 1.0
+mini_batch_size: null
+update_epochs: 4
+clip_range: 0.2
+kl_coef: 0.02
+target_kl: 0.1
+
+# Reward shaping
+# --------------
+reward_scale: 1.0
+invalid_reward: -5.0
+fallback_reward_scale: 1.0
+normalize_advantages: true
+
+# Training schedule
+# -----------------
+max_iterations: 1000
+log_interval: 10
+save_interval: 200
+
+# Runtime settings
+# ----------------
+num_workers: 0
+seed: 1337
+device: cuda
+dtype: float32
+
+data_parallel: false
