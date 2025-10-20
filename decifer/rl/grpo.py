@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -123,6 +124,7 @@ class GRPOConfig:
 
     out_dir: str = "out_grpo"
     dataset: str = ""
+    dataset_split: str = "train"
     init_checkpoint: str = ""
     reference_checkpoint: Optional[str] = None
     batch_size: int = 2
@@ -379,9 +381,11 @@ class GRPOTrainer:
 
         os.makedirs(self.config.out_dir, exist_ok=True)
 
+        dataset_path = self._resolve_dataset_path(self.config.dataset, self.config.dataset_split)
+
         data_keys = ["cif_tokens", "xrd.q", "xrd.iq", "cif_string", "cif_name"]
         self.dataset = DeciferDataset(
-            self.config.dataset,
+            dataset_path,
             data_keys,
             precompute_conditioning=False,
         )
@@ -431,6 +435,51 @@ class GRPOTrainer:
             self.config.data_parallel
             and self.device.type == "cuda"
             and torch.cuda.device_count() > 1
+        )
+
+    def _resolve_dataset_path(self, dataset: str, split: str) -> str:
+        if not dataset:
+            raise ValueError("A dataset path must be provided for GRPO training.")
+
+        resolved_path = os.path.abspath(os.path.expanduser(dataset))
+
+        if os.path.isfile(resolved_path):
+            return resolved_path
+
+        if os.path.isdir(resolved_path):
+            normalized_split = split or "train"
+            candidates = [
+                os.path.join(resolved_path, "serialized", f"{normalized_split}.h5"),
+                os.path.join(resolved_path, normalized_split, f"{normalized_split}.h5"),
+                os.path.join(resolved_path, f"{normalized_split}.h5"),
+            ]
+
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    return candidate
+
+            fallback_dirs = [resolved_path, os.path.join(resolved_path, "serialized")]
+            fallback_paths = []
+            for directory in fallback_dirs:
+                if not os.path.isdir(directory):
+                    continue
+                for entry in Path(directory).iterdir():
+                    if entry.suffix == ".h5" and entry.is_file():
+                        fallback_paths.append(str(entry))
+
+            if len(fallback_paths) == 1:
+                return fallback_paths[0]
+
+            searched = "\n".join(f" - {path}" for path in candidates + fallback_paths)
+            raise FileNotFoundError(
+                "Unable to locate an HDF5 dataset file for split "
+                f"'{normalized_split}' inside '{resolved_path}'.\n"
+                "Checked the following locations:\n"
+                f"{searched if searched else '  (no .h5 files found)'}"
+            )
+
+        raise FileNotFoundError(
+            f"Dataset path '{dataset}' does not exist or is not accessible."
         )
 
     @staticmethod
