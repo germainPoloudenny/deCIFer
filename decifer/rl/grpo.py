@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -339,6 +339,19 @@ def _pad_sequences(sequences: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, tor
     return padded, lengths
 
 
+def _collate_dict_batch(batch: Sequence[Dict[str, Any]]) -> Dict[str, List[Any]]:
+    """Collate variable-length dataset samples without padding."""
+
+    if not batch:
+        return {}
+
+    collated: Dict[str, List[Any]] = {}
+    keys = batch[0].keys()
+    for key in keys:
+        collated[key] = [sample[key] for sample in batch]
+    return collated
+
+
 def _compute_completion_logprobs(
     model: Decifer,
     sequences: torch.Tensor,
@@ -396,6 +409,7 @@ class GRPOTrainer:
             sampler=sampler,
             num_workers=self.config.num_workers,
             drop_last=True,
+            collate_fn=_collate_dict_batch,
         )
         self.data_iterator = iter(self.data_loader)
 
