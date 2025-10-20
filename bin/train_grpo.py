@@ -9,6 +9,10 @@ from typing import Any, Dict
 from omegaconf import OmegaConf
 
 from decifer.rl import GRPOConfig, GRPOTrainer
+from decifer.config.train_config import TrainConfig as _SupervisedTrainConfig
+
+# Ensure legacy checkpoints referencing ``__main__.TrainConfig`` remain loadable
+TrainConfig = _SupervisedTrainConfig
 
 
 def _load_config(path: str) -> Dict[str, Any]:
