@@ -805,7 +805,7 @@ def get_metrics(ckpt_path):
 #  https://github.com/jiaor17/DiffCSP/blob/ee131b03a1c6211828e8054d837caa8f1a980c3e/scripts/compute_metrics.py
 # and from
 # https://github.com/FrederikLizakJohansen/CrystaLLM/blob/2d130f9d561136a8745ab7568ebcbd69cdac913f/bin/benchmark_metrics.py
-def get_rmsd(cif_string_sample, cif_string_gen, matcher):
+def get_rmsd(cif_string_sample, cif_string_gen, matcher, supercell_matcher=None):
     """Compute the RMSD between two CIF strings using normalized cells when possible.
 
     The two input structures are first converted, via :class:`SpacegroupAnalyzer`,
@@ -813,7 +813,12 @@ def get_rmsd(cif_string_sample, cif_string_gen, matcher):
     ``StructureMatcher``. If the normalization fails for both options, the raw
     structures are compared instead. The minimum RMSD returned by
     :meth:`StructureMatcher.get_rms_dist` across all successful comparisons is
-    reported.
+    reported. If no match is found using ``matcher`` and ``supercell_matcher`` is
+    provided, the comparison is retried with the supercell-enabled matcher.
+
+    Returns a tuple ``(best_rmsd, mode)`` where ``mode`` is either ``"standard"``
+    when the primary matcher succeeds, ``"supercell"`` when the fallback matcher
+    provides a match, or ``None`` if no RMSD could be computed.
     """
 
     def _standardized_variants(struct):
@@ -859,26 +864,37 @@ def get_rmsd(cif_string_sample, cif_string_gen, matcher):
     # Fallback to raw structures if no standardized pair succeeds later.
     candidate_pairs.append(("raw", structure_sample, structure_gen))
 
-    best_rmsd = None
+    def _compute_best_rmsd(active_matcher):
+        best = None
 
-    for label, sample_struct, gen_struct in candidate_pairs:
-        try:
-            rmsd = matcher.get_rms_dist(sample_struct, gen_struct)
-        except Exception:
-            continue
+        for label, sample_struct, gen_struct in candidate_pairs:
+            try:
+                rmsd = active_matcher.get_rms_dist(sample_struct, gen_struct)
+            except Exception:
+                continue
 
-        if rmsd is None:
-            continue
+            if rmsd is None:
+                continue
 
-        mean_rmsd = rmsd[0]
-        if best_rmsd is None or mean_rmsd < best_rmsd:
-            best_rmsd = mean_rmsd
+            mean_rmsd = rmsd[0]
+            if best is None or mean_rmsd < best:
+                best = mean_rmsd
 
-        # Early exit if a perfect match is found.
-        if best_rmsd == 0:
-            break
+            if best == 0:
+                break
 
-    return best_rmsd
+        return best
+
+    best_rmsd = _compute_best_rmsd(matcher)
+    if best_rmsd is not None:
+        return best_rmsd, "standard"
+
+    if supercell_matcher is not None:
+        best_rmsd = _compute_best_rmsd(supercell_matcher)
+        if best_rmsd is not None:
+            return best_rmsd, "supercell"
+
+    return None, None
 
 def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset=0.02, plot_metrics=True, figsize=(10, 5)):
     # Apply Seaborn style

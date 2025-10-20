@@ -326,8 +326,15 @@ def worker(input_queue, eval_files_dir, done_queue):
     tokenizer = Tokenizer()
     decode = tokenizer.decode
 
-    # Initialise pymatgen Matcher
+    # Initialise pymatgen Matchers
     matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
+    supercell_matcher = StructureMatcher(
+        stol=0.5,
+        angle_tol=10,
+        ltol=0.3,
+        attempt_supercell=True,
+        supercell_size="minimize",
+    )
 
     while True:
         # Fetch task from the input queue
@@ -391,8 +398,16 @@ def worker(input_queue, eval_files_dir, done_queue):
                 evaluation_result_dict = get_cif_statistics(cif_string_gen, evaluation_result_dict)
 
                 # Evaluate matching structures by RMSD
-                rmsd = get_rmsd(task['cif_string_sample'], cif_string_gen, matcher=matcher)
-                evaluation_result_dict.update({'rmsd': rmsd})
+                rmsd, matcher_mode = get_rmsd(
+                    task['cif_string_sample'],
+                    cif_string_gen,
+                    matcher=matcher,
+                    supercell_matcher=supercell_matcher,
+                )
+                evaluation_result_dict.update({
+                    'rmsd': rmsd,
+                    'structure_match_mode': matcher_mode,
+                })
             
                 status.append('statistics')
                 evaluation_result_dict.update({'status': status})

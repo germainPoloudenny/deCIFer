@@ -151,7 +151,12 @@ def process_cif(
             rwp_value = rwp(iq.cpu().numpy(), iq_gen)
 
             # StructureMatcher RMSD
-            cif_rmsd = get_rmsd(cif_sample, out_cif, matcher)
+            cif_rmsd, matcher_mode = get_rmsd(
+                cif_sample,
+                out_cif,
+                matcher,
+                supercell_matcher=None,
+            )
         except Exception as e:
             print(e)
             continue
@@ -161,6 +166,7 @@ def process_cif(
         results["cif_string_gen"].append(out_cif)
         results["rwp"].append(rwp_value)
         results["rmsd"].append(cif_rmsd)
+        results["structure_match_mode"].append(matcher_mode)
         results["spacegroup_gen"].append(spacegroup_number_gen)
         results["crystal_system_gen"].append(crystal_system_gen)
         results["a_gen"].append(a_gen)
