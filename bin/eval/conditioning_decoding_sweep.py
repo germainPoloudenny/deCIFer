@@ -232,12 +232,12 @@ def _append_rmsd_rankings(frame: pd.DataFrame) -> pd.DataFrame:
 def _build_condition_variants() -> List[ConditionVariant]:
     return [
         ConditionVariant("none", "No conditioning", ()),
-        # ConditionVariant("comp", "Condition on composition", ("--add-composition",)),
-        # ConditionVariant(
-        #     "comp_sg",
-        #     "Condition on composition and space group",
-        #     ("--add-composition", "--add-spacegroup"),
-        # ),
+        ConditionVariant("comp", "Condition on composition", ("--add-composition",)),
+        ConditionVariant(
+             "comp_sg",
+            "Condition on composition and space group",
+            ("--add-composition", "--add-spacegroup"),
+        ),
     ]
 
 
