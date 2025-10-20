@@ -22,7 +22,7 @@ COLLECT_SCRIPT = SCRIPT_DIR / "collect_evaluations.py"
 
 Record = Dict[str, object]
 
-MAX_SAMPLE_GRID = 1000
+DEFAULT_MAX_SAMPLES = 1000
 
 
 def _format_max_samples(max_samples: Optional[int]) -> str:
@@ -311,6 +311,15 @@ def parse_arguments() -> argparse.Namespace:
         help="Seed forwarded to evaluate.py for reproducible sampling.",
     )
     parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=DEFAULT_MAX_SAMPLES,
+        help=(
+            "Maximum number of samples forwarded to evaluate.py. "
+            "Use 0 to disable the limit."
+        ),
+    )
+    parser.add_argument(
         "--length-penalty",
         type=float,
         default=1.0,
@@ -370,6 +379,8 @@ def main() -> None:
     args = parse_arguments()
     if args.beam_size < 1:
         raise ValueError("--beam-size must be at least 1.")
+    if args.max_samples < 0:
+        raise ValueError("--max-samples must be non-negative.")
 
     summary_path = args.summary_path or (args.out_root / "conditioning_decoding_summary.csv")
     summary_json_path = args.summary_json_path or (
@@ -385,7 +396,11 @@ def main() -> None:
     records: List[Record] = []
     condition_variants = _build_condition_variants()
 
-    max_samples = MAX_SAMPLE_GRID
+    max_samples: Optional[int]
+    if args.max_samples == 0:
+        max_samples = None
+    else:
+        max_samples = args.max_samples
     decoding_variants = _build_decoding_variants(
         args.beam_size,
         sampling_top_k=args.sampling_top_k,
