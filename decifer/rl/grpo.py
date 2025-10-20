@@ -19,6 +19,7 @@ from decifer.tokenizer import Tokenizer
 from decifer.utility import (
     discrete_to_continuous_xrd,
     extract_space_group_symbol,
+    generate_continuous_xrd_from_cif,
     get_rmsd,
     is_sensible,
     reinstate_symmetry_loop,
@@ -140,6 +141,7 @@ class GRPOConfig:
     target_kl: float = 0.1
     invalid_reward: float = -5.0
     reward_scale: float = 1.0
+    fallback_reward_scale: float = 1.0
     normalize_advantages: bool = True
     max_iterations: int = 1000
     log_interval: int = 10
@@ -186,9 +188,17 @@ class RolloutSample:
 class RMSDRewardScorer:
     """Compute RMSD-based rewards for generated CIF structures."""
 
-    def __init__(self, invalid_reward: float = -5.0):
+    def __init__(
+        self,
+        invalid_reward: float = -5.0,
+        *,
+        fallback_scale: float = 1.0,
+        xrd_kwargs: Optional[Dict[str, float]] = None,
+    ):
         self.tokenizer = TOKENIZER
         self.invalid_reward = invalid_reward
+        self.fallback_scale = fallback_scale
+        self.xrd_kwargs = dict(xrd_kwargs or {})
         self.matcher = StructureMatcher(stol=0.5, angle_tol=10, ltol=0.3)
         self.supercell_matcher = StructureMatcher(
             stol=0.5,
@@ -202,6 +212,9 @@ class RMSDRewardScorer:
         self,
         reference_cif: str,
         generated_tokens: Sequence[int],
+        *,
+        reference_xrd: Optional[torch.Tensor] = None,
+        xrd_kwargs: Optional[Dict[str, float]] = None,
     ) -> Tuple[float, Dict[str, Optional[float]]]:
         """Return a GRPO reward based on RMSD similarity."""
 
@@ -221,10 +234,93 @@ class RMSDRewardScorer:
             supercell_matcher=self.supercell_matcher,
         )
         if rmsd is None:
-            return self.invalid_reward, {"rmsd": None, "mode": mode}
+            fallback = self._score_with_rwp(
+                reference_xrd,
+                cif_string_gen,
+                xrd_kwargs=xrd_kwargs,
+            )
+            if fallback is not None:
+                reward_value, rwp_value = fallback
+                return reward_value, {"rmsd": None, "mode": "rwp", "rwp": rwp_value}
+            return self.invalid_reward, {"rmsd": None, "mode": mode, "rwp": None}
 
         reward = -float(rmsd) * 1.0
-        return reward, {"rmsd": float(rmsd), "mode": mode}
+        return reward, {"rmsd": float(rmsd), "mode": mode, "rwp": None}
+
+    def _score_with_rwp(
+        self,
+        reference_xrd: Optional[torch.Tensor],
+        cif_string_gen: str,
+        *,
+        xrd_kwargs: Optional[Dict[str, float]] = None,
+    ) -> Optional[Tuple[float, float]]:
+        """Return a reward based on the residual weighted profile metric."""
+
+        if reference_xrd is None:
+            return None
+
+        kwargs: Dict[str, object] = {}
+        kwargs.update(self.xrd_kwargs)
+        if xrd_kwargs:
+            kwargs.update(xrd_kwargs)
+
+        deterministic_kwargs: Dict[str, object] = {}
+        for key in ("qmin", "qmax", "qstep"):
+            if key in kwargs:
+                deterministic_kwargs[key] = kwargs[key]
+
+        if "fwhm_range" in kwargs:
+            fwhm_range = kwargs["fwhm_range"]
+            if isinstance(fwhm_range, (list, tuple)) and len(fwhm_range) == 2:
+                midpoint = float(sum(fwhm_range) / 2.0)
+                deterministic_kwargs["fwhm_range"] = (midpoint, midpoint)
+        if "eta_range" in kwargs:
+            eta_range = kwargs["eta_range"]
+            if isinstance(eta_range, (list, tuple)) and len(eta_range) == 2:
+                midpoint = float(sum(eta_range) / 2.0)
+                deterministic_kwargs["eta_range"] = (midpoint, midpoint)
+
+        deterministic_kwargs.setdefault("noise_range", None)
+        deterministic_kwargs.setdefault("mask_prob", None)
+        deterministic_kwargs.setdefault("intensity_scale_range", (1.0, 1.0))
+
+        xrd_gen = generate_continuous_xrd_from_cif(
+            cif_string_gen,
+            **deterministic_kwargs,
+        )
+        if xrd_gen is None:
+            return None
+
+        iq_gen = xrd_gen.get("iq")
+        if iq_gen is None:
+            return None
+        if isinstance(iq_gen, torch.Tensor):
+            iq_gen = iq_gen.detach().cpu().to(dtype=torch.float32)
+        else:
+            iq_gen = torch.tensor(iq_gen, dtype=torch.float32)
+
+        reference = reference_xrd.detach().cpu().to(dtype=torch.float32)
+        if reference.dim() > 1:
+            reference = reference.squeeze(0)
+        if iq_gen.dim() > 1:
+            iq_gen = iq_gen.squeeze(0)
+
+        if reference.numel() == 0 or iq_gen.numel() == 0:
+            return None
+
+        if reference.numel() != iq_gen.numel():
+            min_len = min(reference.numel(), iq_gen.numel())
+            reference = reference[:min_len]
+            iq_gen = iq_gen[:min_len]
+
+        denominator = torch.sum(reference ** 2)
+        if denominator <= 0:
+            return None
+
+        numerator = torch.sum((reference - iq_gen) ** 2)
+        rwp_value = torch.sqrt(numerator / denominator).item()
+        reward = -float(rwp_value) * self.fallback_scale
+        return reward, float(rwp_value)
 
 
 def _pad_sequences(sequences: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -315,7 +411,11 @@ class GRPOTrainer:
             weight_decay=self.config.weight_decay,
         )
 
-        self.reward_scorer = RMSDRewardScorer(self.config.invalid_reward)
+        self.reward_scorer = RMSDRewardScorer(
+            self.config.invalid_reward,
+            fallback_scale=self.config.fallback_reward_scale,
+            xrd_kwargs=self.config.conditioning_kwargs,
+        )
 
         self.iteration = 0
         self.global_step = 0
@@ -397,6 +497,7 @@ class GRPOTrainer:
             lengths = lengths.to(self.device)
             prompt_lengths = torch.full_like(lengths, fill_value=prompt_length)
             cond_batch = cond_vec.repeat(padded.size(0), 1)
+            reference_pattern = cond_vec.squeeze(0).detach().cpu()
 
             with torch.no_grad():
                 logprob_sum, _ = _compute_completion_logprobs(
@@ -413,8 +514,10 @@ class GRPOTrainer:
                 reward, details = self.reward_scorer.score(
                     sample_dict["cif_string"],
                     sequence_trimmed.tolist(),
+                    reference_xrd=reference_pattern,
+                    xrd_kwargs=self.config.conditioning_kwargs,
                 )
-                is_valid = details["rmsd"] is not None
+                is_valid = details["mode"] != "rwp" and details["rmsd"] is not None
                 if is_valid:
                     valid_count += 1
                     batch_rmsd.append(details["rmsd"] or 0.0)
