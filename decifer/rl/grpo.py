@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -523,11 +524,14 @@ class GRPOTrainer:
 
     def __init__(self, config: GRPOConfig):
         self.config = config
-        self.device = config.resolved_device()
+        self.world_size, self.rank, self.local_rank = self._infer_process_info()
+        self.device = self._setup_device()
         self.use_data_parallel = self._should_use_data_parallel()
-        torch.manual_seed(config.seed)
+
+        seed = config.seed + self.rank
+        torch.manual_seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(config.seed)
+            torch.cuda.manual_seed_all(seed)
 
         os.makedirs(self.config.out_dir, exist_ok=True)
 
@@ -535,6 +539,7 @@ class GRPOTrainer:
 
         data_keys = ["cif_tokens", "xrd.q", "xrd.iq", "cif_string", "cif_name"]
         dataset_kwargs: Dict[str, Any] = {}
+        cache_path: Optional[str] = None
         if self.config.precompute_conditioning:
             if not self.config.conditioning_kwargs:
                 raise ValueError(
@@ -547,10 +552,12 @@ class GRPOTrainer:
                 "precompute_batch_size": self.config.precompute_conditioning_batch_size,
                 "conditioning_device": self.device,
                 "progress_desc": f"{self.config.dataset_split} dataset",
-                "show_progress": True,
+                "show_progress": self.rank == 0,
             }
             cache_path = self._resolve_conditioning_cache_path(dataset_path)
             if cache_path is not None:
+                if self.world_size > 1 and self.rank != 0 and not os.path.exists(cache_path):
+                    self._wait_for_conditioning_cache(cache_path)
                 dataset_kwargs["conditioning_cache_path"] = cache_path
         self.dataset = DeciferDataset(
             dataset_path,
@@ -598,6 +605,77 @@ class GRPOTrainer:
 
         self.iteration = 0
         self.global_step = 0
+
+    @staticmethod
+    def _parse_env_rank(name: str, default: int) -> int:
+        value = os.environ.get(name)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _infer_process_info(self) -> Tuple[int, int, int]:
+        world_size = self._parse_env_rank("WORLD_SIZE", 1)
+        rank = self._parse_env_rank("RANK", 0)
+        local_rank = self._parse_env_rank("LOCAL_RANK", rank)
+        return world_size, rank, local_rank
+
+    def _setup_device(self) -> torch.device:
+        base_device = self.config.resolved_device()
+
+        if base_device.type == "cuda" and torch.cuda.is_available():
+            if self.world_size > 1:
+                torch.cuda.set_device(self.local_rank)
+                resolved = torch.device(f"cuda:{self.local_rank}")
+            else:
+                if base_device.index is not None:
+                    torch.cuda.set_device(base_device.index)
+                    resolved = torch.device(f"cuda:{base_device.index}")
+                else:
+                    current_index = torch.cuda.current_device()
+                    torch.cuda.set_device(current_index)
+                    resolved = torch.device(f"cuda:{current_index}")
+            self.config.device = str(resolved)
+            return resolved
+
+        return base_device
+
+    def _wait_for_conditioning_cache(
+        self,
+        cache_path: str,
+        *,
+        poll_interval: float = 1.0,
+        timeout: float = 3600.0,
+    ) -> None:
+        if os.path.exists(cache_path):
+            return
+
+        start_time = time.monotonic()
+        notified = False
+        while not os.path.exists(cache_path):
+            if timeout > 0 and (time.monotonic() - start_time) > timeout:
+                if not notified:
+                    print(
+                        f"[WARN] Rank {self.rank}: timeout while waiting for conditioning cache at {cache_path}; "
+                        "proceeding without synchronization.",
+                        flush=True,
+                    )
+                return
+            if not notified:
+                print(
+                    f"[INFO] Rank {self.rank}: waiting for conditioning cache at {cache_path}...",
+                    flush=True,
+                )
+                notified = True
+            time.sleep(poll_interval)
+
+        if notified:
+            print(
+                f"[INFO] Rank {self.rank}: detected conditioning cache at {cache_path}.",
+                flush=True,
+            )
 
     def _should_use_data_parallel(self) -> bool:
         return (
