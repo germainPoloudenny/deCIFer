@@ -14,7 +14,7 @@ dataset_split: train
 
 # Rollout generation
 # ------------------
-batch_size: 32
+batch_size: 1
 group_size: 4
 temperature: 1.0
 top_k: null
