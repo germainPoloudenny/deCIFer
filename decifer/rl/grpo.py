@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -391,6 +392,132 @@ def _compute_completion_logprobs(
     return completion_logprob, completion_mask
 
 
+@torch.no_grad()
+def _batched_autoregressive_generate(
+    model: Decifer,
+    prompts: Sequence[torch.Tensor],
+    prompt_lengths: torch.Tensor,
+    cond_batch: torch.Tensor,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: Optional[int],
+    block_size: int,
+    device: torch.device,
+) -> Tuple[List[torch.Tensor], torch.Tensor]:
+    """Generate completions for a batch of prompts in parallel."""
+
+    total = len(prompts)
+    if total == 0:
+        empty = torch.zeros(0, dtype=torch.long)
+        return [], empty
+
+    if cond_batch.size(0) != total:
+        raise ValueError("cond_batch must match number of prompts")
+
+    prompt_lengths = prompt_lengths.to(device=device, dtype=torch.long)
+    cond_batch = cond_batch.to(device=device)
+
+    max_prompt_len = int(prompt_lengths.max().item()) if prompt_lengths.numel() else 0
+    total_max_len = max_prompt_len + max_new_tokens
+    sequences = torch.full(
+        (total, max(total_max_len, 1)),
+        fill_value=PADDING_ID,
+        dtype=torch.long,
+        device=device,
+    )
+    seq_lengths = prompt_lengths.clone()
+    finished = torch.zeros(total, dtype=torch.bool, device=device)
+    prev_ids = torch.full((total,), fill_value=-1, dtype=torch.long, device=device)
+
+    for idx, prompt in enumerate(prompts):
+        prompt_tensor = prompt.to(device=device, dtype=torch.long).view(-1)
+        length = prompt_tensor.size(0)
+        if length == 0:
+            continue
+        sequences[idx, :length] = prompt_tensor
+
+    for _ in range(max_new_tokens):
+        active_indices = torch.nonzero(~finished, as_tuple=True)[0]
+        if active_indices.numel() == 0:
+            break
+
+        seq_lengths_active = seq_lengths[active_indices]
+        start_positions = torch.clamp(seq_lengths_active - block_size, min=0)
+        context_lengths = seq_lengths_active - start_positions
+        if torch.any(context_lengths <= 0):
+            break
+
+        max_context_len = int(context_lengths.max().item())
+        context_batch = torch.full(
+            (active_indices.size(0), max_context_len),
+            fill_value=PADDING_ID,
+            dtype=torch.long,
+            device=device,
+        )
+
+        active_list = active_indices.tolist()
+        for local_idx, global_idx in enumerate(active_list):
+            length = int(seq_lengths[global_idx].item())
+            start = max(length - block_size, 0)
+            end = length
+            if end > start:
+                context_batch[local_idx, : end - start] = sequences[global_idx, start:end]
+
+        logits, _ = model(
+            context_batch,
+            cond_vec=cond_batch[active_indices],
+            start_indices_batch=[[0]] * context_batch.size(0),
+        )
+
+        gather_indices = (context_lengths - 1).view(-1, 1, 1).expand(-1, 1, logits.size(-1))
+        logits_last = logits.gather(1, gather_indices).squeeze(1)
+
+        if temperature != 1.0:
+            logits_last = logits_last / temperature
+
+        if top_k is not None:
+            topk = min(top_k, logits_last.size(-1))
+            if topk <= 0:
+                raise ValueError("top_k must be a positive integer")
+            top_values, _ = torch.topk(logits_last, topk)
+            thresholds = top_values[:, -1].unsqueeze(-1)
+            logits_last = torch.where(
+                logits_last >= thresholds,
+                logits_last,
+                torch.full_like(logits_last, float("-inf")),
+            )
+
+        probs = F.softmax(logits_last, dim=-1)
+        next_tokens_active = torch.multinomial(probs, num_samples=1).squeeze(1)
+
+        positions = seq_lengths_active
+        sequences[active_indices, positions] = next_tokens_active
+        seq_lengths[active_indices] = seq_lengths_active + 1
+
+        prev_prev = prev_ids[active_indices]
+        pad_finish = next_tokens_active == PADDING_ID
+        newline_finish = (prev_prev == NEWLINE_ID) & (next_tokens_active == NEWLINE_ID)
+
+        if pad_finish.any():
+            pad_indices = active_indices[pad_finish]
+            seq_lengths[pad_indices] -= 1
+
+        finished_indices = active_indices[pad_finish | newline_finish]
+        finished[finished_indices] = True
+        prev_ids[active_indices] = next_tokens_active
+
+    seq_lengths_cpu = seq_lengths.detach().cpu()
+    trajectories: List[torch.Tensor] = []
+    for idx in range(total):
+        length = int(seq_lengths_cpu[idx].item())
+        if length <= 0:
+            trajectories.append(torch.empty(0, dtype=torch.long))
+        else:
+            trajectories.append(sequences[idx, :length].detach().cpu())
+
+    return trajectories, seq_lengths_cpu
+
+
 class GRPOTrainer:
     """Run Group Relative Policy Optimization to fine-tune deCIFer."""
 
@@ -587,12 +714,12 @@ class GRPOTrainer:
 
     def collect_rollout(self) -> Tuple[List[RolloutSample], Dict[str, float]]:
         self.model.eval()
-        samples: List[RolloutSample] = []
         batch = self._next_batch()
         batch_rewards: List[float] = []
         batch_rmsd: List[float] = []
         valid_count = 0
 
+        samples_data: List[Dict[str, Any]] = []
         for idx in range(self.config.batch_size):
             sample_dict = {key: batch[key][idx] for key in batch}
             prompt, cond_vec = prepare_prompt_and_conditioning(
@@ -602,67 +729,132 @@ class GRPOTrainer:
                 add_spacegroup=self.config.add_spacegroup,
                 conditioning_kwargs=self.config.conditioning_kwargs,
             )
-            prompt_length = prompt.size(1)
-            cond_vec = cond_vec.to(self.device)
+            prompt_tokens = prompt.squeeze(0).detach()
+            cond_tokens = cond_vec.squeeze(0).detach()
+            cond_cpu = cond_tokens.detach().cpu()
 
-            group_rewards: List[float] = []
-            group_rmsd: List[Optional[float]] = []
-            trajectories: List[torch.Tensor] = []
-            logprobs: List[float] = []
-            validity: List[bool] = []
+            samples_data.append(
+                {
+                    "sample": sample_dict,
+                    "prompt": prompt_tokens,
+                    "prompt_length": int(prompt_tokens.size(0)),
+                    "cond_vec": cond_tokens,
+                    "cond_vec_cpu": cond_cpu,
+                    "reference_pattern": cond_cpu,
+                }
+            )
 
-            with torch.no_grad():
-                for _ in range(self.config.group_size):
-                    generated = self.model.generate(
-                        prompt.clone(),
-                        self.config.max_new_tokens,
-                        cond_vec=cond_vec,
-                        start_indices_batch=[[0]],
-                        temperature=self.config.temperature,
-                        top_k=self.config.top_k,
-                        disable_pbar=True,
-                    )
-                    sequence = generated.squeeze(0).detach().cpu()
-                    trajectories.append(sequence)
+        expanded_prompts: List[torch.Tensor] = []
+        expanded_prompt_lengths: List[int] = []
+        expanded_cond_vecs: List[torch.Tensor] = []
+        expanded_sample_indices: List[int] = []
 
-            padded, lengths = _pad_sequences(trajectories)
-            if padded.numel() == 0:
+        for sample_idx, info in enumerate(samples_data):
+            for _ in range(self.config.group_size):
+                expanded_prompts.append(info["prompt"])
+                expanded_prompt_lengths.append(info["prompt_length"])
+                expanded_cond_vecs.append(info["cond_vec"])
+                expanded_sample_indices.append(sample_idx)
+
+        if not expanded_prompts:
+            self.model.train()
+            metrics = {
+                "mean_reward": 0.0,
+                "valid_fraction": 0.0,
+                "mean_rmsd": float("nan"),
+            }
+            return [], metrics
+
+        cond_batch = torch.stack(expanded_cond_vecs, dim=0)
+        prompt_lengths_tensor = torch.tensor(
+            expanded_prompt_lengths, dtype=torch.long, device=self.device
+        )
+        block_size = self._unwrap_model(self.model).config.block_size
+
+        trajectories, _ = _batched_autoregressive_generate(
+            self.model,
+            expanded_prompts,
+            prompt_lengths_tensor,
+            cond_batch,
+            self.config.max_new_tokens,
+            self.config.temperature,
+            self.config.top_k,
+            block_size,
+            self.device,
+        )
+
+        padded, lengths = _pad_sequences(trajectories)
+        if padded.numel() == 0:
+            self.model.train()
+            metrics = {
+                "mean_reward": 0.0,
+                "valid_fraction": 0.0,
+                "mean_rmsd": float("nan"),
+            }
+            return [], metrics
+
+        padded_device = padded.to(self.device)
+        lengths_device = lengths.to(self.device)
+        cond_batch = cond_batch.to(self.device)
+
+        with torch.no_grad():
+            logprob_sum, _ = _compute_completion_logprobs(
+                self.model,
+                padded_device,
+                lengths_device,
+                prompt_lengths_tensor,
+                cond_batch,
+            )
+
+        logprob_sum_cpu = logprob_sum.detach().cpu()
+
+        sequence_infos: List[Dict[str, Any]] = []
+        group_rewards: Dict[int, List[float]] = defaultdict(list)
+        group_indices: Dict[int, List[int]] = defaultdict(list)
+
+        for seq_idx, sequence in enumerate(trajectories):
+            seq_len = int(lengths[seq_idx].item())
+            if seq_len == 0:
                 continue
-            padded = padded.to(self.device)
-            lengths = lengths.to(self.device)
-            prompt_lengths = torch.full_like(lengths, fill_value=prompt_length)
-            cond_batch = cond_vec.repeat(padded.size(0), 1)
-            reference_pattern = cond_vec.squeeze(0).detach().cpu()
 
-            with torch.no_grad():
-                logprob_sum, _ = _compute_completion_logprobs(
-                    self.model,
-                    padded,
-                    lengths,
-                    prompt_lengths,
-                    cond_batch,
-                )
+            sample_idx = expanded_sample_indices[seq_idx]
+            sample_info = samples_data[sample_idx]
+            sequence_trimmed = sequence[:seq_len]
 
-            for seq_idx, sequence in enumerate(trajectories):
-                seq_len = int(lengths[seq_idx].item())
-                sequence_trimmed = sequence[:seq_len]
-                reward, details = self.reward_scorer.score(
-                    sample_dict["cif_string"],
-                    sequence_trimmed.tolist(),
-                    reference_xrd=reference_pattern,
-                    xrd_kwargs=self.config.conditioning_kwargs,
-                )
-                is_valid = details["mode"] != "rwp" and details["rmsd"] is not None
-                if is_valid:
-                    valid_count += 1
-                    batch_rmsd.append(details["rmsd"] or 0.0)
-                batch_rewards.append(reward)
-                group_rewards.append(reward)
-                group_rmsd.append(details["rmsd"])
-                validity.append(is_valid)
-                logprobs.append(float(logprob_sum[seq_idx].item()))
+            reward, details = self.reward_scorer.score(
+                sample_info["sample"]["cif_string"],
+                sequence_trimmed.tolist(),
+                reference_xrd=sample_info["reference_pattern"],
+                xrd_kwargs=self.config.conditioning_kwargs,
+            )
 
-            rewards_tensor = torch.tensor(group_rewards)
+            is_valid = details["mode"] != "rwp" and details["rmsd"] is not None
+            if is_valid:
+                valid_count += 1
+                batch_rmsd.append(details["rmsd"] or 0.0)
+
+            batch_rewards.append(reward)
+
+            sequence_infos.append(
+                {
+                    "sample_idx": sample_idx,
+                    "sequence": sequence_trimmed,
+                    "seq_len": seq_len,
+                    "prompt_length": expanded_prompt_lengths[seq_idx],
+                    "logprob": float(logprob_sum_cpu[seq_idx].item()),
+                    "reward": reward,
+                    "rmsd": details["rmsd"],
+                    "is_valid": is_valid,
+                }
+            )
+            group_rewards[sample_idx].append(reward)
+            group_indices[sample_idx].append(len(sequence_infos) - 1)
+
+        for sample_idx, rewards in group_rewards.items():
+            if not rewards:
+                continue
+
+            rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
             scaled_rewards = rewards_tensor * self.config.reward_scale
             baseline = scaled_rewards.mean()
             advantages = scaled_rewards - baseline
@@ -671,21 +863,30 @@ class GRPOTrainer:
                 if torch.isfinite(std) and std > 1e-6:
                     advantages = advantages / std
 
-            for seq_idx, sequence in enumerate(trajectories):
-                seq_len = int(lengths[seq_idx].item())
-                samples.append(
-                    RolloutSample(
-                        sequence=sequence[:seq_len],
-                        cond_vec=cond_vec.squeeze(0).cpu(),
-                        prompt_length=prompt_length,
-                        sequence_length=seq_len,
-                        old_logprob=logprobs[seq_idx],
-                        reward=float(scaled_rewards[seq_idx].item()),
-                        advantage=float(advantages[seq_idx].item()),
-                        rmsd=group_rmsd[seq_idx],
-                        is_valid=validity[seq_idx],
-                    )
+            for local_idx, info_idx in enumerate(group_indices[sample_idx]):
+                sequence_infos[info_idx]["scaled_reward"] = float(
+                    scaled_rewards[local_idx].item()
                 )
+                sequence_infos[info_idx]["advantage"] = float(
+                    advantages[local_idx].item()
+                )
+
+        samples: List[RolloutSample] = []
+        for info in sequence_infos:
+            sample_idx = info["sample_idx"]
+            samples.append(
+                RolloutSample(
+                    sequence=info["sequence"],
+                    cond_vec=samples_data[sample_idx]["cond_vec_cpu"],
+                    prompt_length=info["prompt_length"],
+                    sequence_length=info["seq_len"],
+                    old_logprob=info["logprob"],
+                    reward=info["scaled_reward"],
+                    advantage=info["advantage"],
+                    rmsd=info["rmsd"],
+                    is_valid=info["is_valid"],
+                )
+            )
 
         self.model.train()
         metrics = {
