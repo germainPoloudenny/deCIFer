@@ -14,7 +14,7 @@ dataset_split: train
 
 # Rollout generation
 # ------------------
-batch_size: 1
+batch_size: 64
 group_size: 4
 temperature: 1.0
 top_k: null
@@ -30,7 +30,7 @@ conditioning_kwargs:
   intensity_scale_range: [1.0, 1.0]
   mask_prob: 0.0
 precompute_conditioning: true
-precompute_conditioning_batch_size: 256
+precompute_conditioning_batch_size: 64
 conditioning_cache_dir: runs/deCIFer_cifs_v1_model/conditioning_cache
 
 # Optimisation hyperparameters
