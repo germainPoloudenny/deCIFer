@@ -470,7 +470,19 @@ def _batched_autoregressive_generate(
             start_indices_batch=[[0]] * context_batch.size(0),
         )
 
-        gather_indices = (context_lengths - 1).view(-1, 1, 1).expand(-1, 1, logits.size(-1))
+        last_positions = context_lengths - 1
+        last_positions = torch.clamp(last_positions, min=0)
+
+        additional_positions = logits.size(1) - context_batch.size(1)
+        if additional_positions > 0:
+            last_positions = last_positions + additional_positions
+
+        max_valid_index = logits.size(1) - 1
+        if max_valid_index < 0:
+            raise RuntimeError("Model returned empty logits during generation")
+        last_positions = torch.clamp(last_positions, max=max_valid_index)
+
+        gather_indices = last_positions.view(-1, 1, 1).expand(-1, 1, logits.size(-1))
         logits_last = logits.gather(1, gather_indices).squeeze(1)
 
         if temperature != 1.0:
