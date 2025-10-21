@@ -29,7 +29,7 @@ conditioning_kwargs:
   noise_range: [0.001, 0.05]
   intensity_scale_range: [1.0, 1.0]
   mask_prob: 0.0
-precompute_conditioning: true
+#precompute_conditioning: true
 precompute_conditioning_batch_size: 64
 conditioning_cache_dir: runs/deCIFer_cifs_v1_model/conditioning_cache
 
