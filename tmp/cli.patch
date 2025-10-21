@@ -1,0 +1,111 @@
+diff --git a/slurm/create_jean_zay_job.py b/slurm/create_jean_zay_job.py
+index 0adf868e05f4d0f3564cef36c14338ddb7a7bbd3..b6e3240d57ac99030e0eeced15a84a0b128767f9 100644
+--- a/slurm/create_jean_zay_job.py
++++ b/slurm/create_jean_zay_job.py
+@@ -1,31 +1,32 @@
+ #!/usr/bin/env python3
+ """Generate a Jean Zay ready SLURM script from a command file."""
+ 
+ from __future__ import annotations
+ 
+ import argparse
++import os
+ import pathlib
+ import shlex
+ import subprocess
+ import sys
+ from datetime import datetime
+ 
+ # Mapping des types de GPU -> partition / gres / contrainte
+ GPU_PARTITIONS = {
+     "v100": {"partition": "gpu_p2", "gres": "gpu:1", "constraint": "v100"},
+     "a100": {"partition": "gpu_p5", "gres": "gpu:1", "constraint": "a100"},
+     "h100": {"partition": "gpu_p6", "gres": "gpu:1", "constraint": "h100"},
+ }
+ 
+ GPU_DEFAULT_ACCOUNTS = {
+     "v100": "nxk@v100",
+     "a100": "nxk@a100",
+     "h100": "nxk@h100",
+ }
+ 
+ 
+ def run_git_command(*args: str) -> str:
+     try:
+         return (
+             subprocess.check_output(["git", *args], stderr=subprocess.STDOUT)
+             .decode()
+@@ -129,63 +130,72 @@ def main() -> None:
+     if account_gpu_suffix and account_gpu_suffix != gpu_type:
+         raise SystemExit(
+             "The requested GPU type does not match the provided account. "
+             f"Account '{account}' cannot be used with GPU type '{gpu_type}'. "
+             "Please pass a matching --gpu-type or --account."
+         )
+ 
+     partition_info = GPU_PARTITIONS[gpu_type]
+     gres = partition_info["gres"]
+     partition = partition_info["partition"]
+     constraint = partition_info["constraint"]
+ 
+     if account is None:
+         account = GPU_DEFAULT_ACCOUNTS.get(gpu_type)
+ 
+     output_path: pathlib.Path = args.output
+     if not output_path.parent.exists():
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+ 
+     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+ 
+     modules_block = "\n".join(
+         f"module load {module}" for module in args.modules if module
+     )
+ 
++    work_dir = os.environ.get("WORK")
++    if not work_dir:
++        raise SystemExit(
++            "Environment variable WORK is not defined. Please load the Jean Zay "
++            "environment before generating a SLURM script."
++        )
++    logs_dir = pathlib.Path(work_dir) / "deCIFer" / "logs"
++    logs_dir.mkdir(parents=True, exist_ok=True)
++
+     header_lines = [
+         "#!/bin/bash",
+         f"#SBATCH --job-name={args.job_name}",
+         f"#SBATCH --partition={partition}",
+         f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
+         f"#SBATCH --gres={gres}",               # <<-- on demande bien 1 GPU
+     ]
+     if account:
+         header_lines.append(f"#SBATCH --account={account}")
+     header_lines.extend(
+         [
+             f"#SBATCH --time={args.time}",
+-            f"#SBATCH --output=$WORK/deCIFer/logs/{args.job_name}_%j.out",
++            f"#SBATCH --output={logs_dir}/{args.job_name}_%j.out",
+             f"#SBATCH --ntasks-per-node=1",
+             f"#SBATCH --hint=nomultithread",
+             "",
+         ]
+     )
+ 
+     job_script = "\n".join(header_lines)
+ 
+     job_script += f"""
+ 
+ set -euo pipefail
+ 
+ export OMP_NUM_THREADS={args.cpus}
+ 
+ REPO_DIR={shlex.quote(str(repo_root))}
+ COMMIT_HASH={commit_hash!r}
+ RUN_COMMAND={shlex.quote(command)}
+ GENERATED_AT={timestamp!r}
+ 
+ mkdir -p "$WORK/deCIFer/logs"
+ 
+ cd "$REPO_DIR"
+ echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
+ git fetch --all --prune
+ if ! git checkout "$COMMIT_HASH"; then
