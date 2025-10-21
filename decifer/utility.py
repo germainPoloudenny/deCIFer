@@ -2,6 +2,7 @@
 
 import re
 import math
+import logging
 from typing import Optional, Tuple
 import torch
 import h5py
@@ -23,6 +24,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from periodictable import elements as pelements
+
+
+LOGGER = logging.getLogger(__name__)
 
 def element_to_atomic_number(element):
     try:
@@ -431,7 +435,15 @@ def replace_symmetry_loop_with_P1(cif_str):
     return cif_str
 
 def reinstate_symmetry_loop(cif_str, space_group_symbol):
-    space_group = SpaceGroup(space_group_symbol)
+    try:
+        space_group = SpaceGroup(space_group_symbol)
+    except ValueError:
+        LOGGER.warning(
+            "Unable to reinstate symmetry loop for invalid space group symbol %r.",
+            space_group_symbol,
+        )
+        return cif_str
+
     symmetry_ops = space_group.symmetry_ops
 
     loops = []
