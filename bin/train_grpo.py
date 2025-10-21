@@ -59,6 +59,9 @@ def build_config(args: argparse.Namespace) -> GRPOConfig:
         "max_iterations",
         "log_interval",
         "save_interval",
+        "conditioning_cache_dir",
+        "precompute_conditioning",
+        "precompute_conditioning_batch_size",
         "device",
         "dtype",
         "num_workers",
@@ -141,6 +144,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     parser.add_argument("--add-composition", dest="add_composition", type=lambda x: x.lower() == "true", default=None, help="Include composition information in prompts (true/false).")
     parser.add_argument("--add-spacegroup", dest="add_spacegroup", type=lambda x: x.lower() == "true", default=None, help="Include space-group information in prompts (true/false).")
+    parser.add_argument(
+        "--precompute-conditioning",
+        dest="precompute_conditioning",
+        action="store_true",
+        help="Precompute continuous XRD conditioning vectors and cache them before GRPO training.",
+    )
+    parser.add_argument(
+        "--no-precompute-conditioning",
+        dest="precompute_conditioning",
+        action="store_false",
+        help="Disable conditioning precomputation regardless of the configuration file.",
+    )
+    parser.set_defaults(precompute_conditioning=None)
+    parser.add_argument(
+        "--conditioning-cache-dir",
+        dest="conditioning_cache_dir",
+        type=str,
+        default=None,
+        help="Directory used to persist PXRD conditioning caches.",
+    )
+    parser.add_argument(
+        "--precompute-conditioning-batch-size",
+        dest="precompute_conditioning_batch_size",
+        type=int,
+        default=None,
+        help="Batch size employed when precomputing conditioning vectors.",
+    )
     parser.add_argument(
         "--conditioning-kwargs",
         type=str,
