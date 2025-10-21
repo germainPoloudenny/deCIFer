@@ -1,1 +1,1 @@
-torchrun --nproc_per_node=2  bin/eval/evaluate.py   --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt   --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5   --out-folder runs/deCIFer_cifs_v1_model/eval_20000   --beam-size 1   --temperature 1.0   --top-k 50   --length-penalty 1.0 --max-samples=20000
+torchrun --nproc_per_node=2 bin/train.py --config configs/deCIFer_cifs_v1.yaml
