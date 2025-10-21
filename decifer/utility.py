@@ -388,12 +388,47 @@ def add_atomic_props_block(cif_str, oxi=False):
         raise Exception(f"Pattern not found: {cif_str}")
 
 def replace_symmetry_loop_with_P1(cif_str):
-    start = cif_str.find("_symmetry_equiv_pos_site_id")
-    end = cif_str.find("loop_", start+1)
+    """Normalise the symmetry-equivalent positions loop to the P1 setting."""
 
-    replacement = """_symmetry_equiv_pos_site_id\n_symmetry_equiv_pos_as_xyz\n1  'x, y, z'\n"""
+    lines = cif_str.splitlines()
+    has_trailing_newline = cif_str.endswith("\n")
 
-    return cif_str.replace(cif_str[start:end], replacement)
+    for index, line in enumerate(lines):
+        if line.strip().startswith("loop_"):
+            if index + 2 >= len(lines):
+                continue
+
+            next_line = lines[index + 1].strip()
+            third_line = lines[index + 2].strip()
+            if not (
+                next_line.startswith("_symmetry_equiv_pos_site_id")
+                and third_line.startswith("_symmetry_equiv_pos_as_xyz")
+            ):
+                continue
+
+            indent = re.match(r"\s*", line).group(0)
+
+            end_index = index + 3
+            while end_index < len(lines):
+                stripped = lines[end_index].lstrip()
+                if stripped.startswith("loop_") or stripped.startswith("_"):
+                    break
+                end_index += 1
+
+            replacement_lines = [
+                f"{indent}loop_",
+                f"{indent}_symmetry_equiv_pos_site_id",
+                f"{indent}_symmetry_equiv_pos_as_xyz",
+                f"{indent}1  'x, y, z'",
+            ]
+
+            new_lines = lines[:index] + replacement_lines + lines[end_index:]
+            result = "\n".join(new_lines)
+            if has_trailing_newline:
+                result += "\n"
+            return result
+
+    return cif_str
 
 def reinstate_symmetry_loop(cif_str, space_group_symbol):
     space_group = SpaceGroup(space_group_symbol)

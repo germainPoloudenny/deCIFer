@@ -368,7 +368,12 @@ def _compute_completion_logprobs(
 
     inputs = sequences[:, :-1]
     targets = sequences[:, 1:]
-    logits, _ = model(inputs, cond_vec=cond_vec, start_indices_batch=[[0]] * sequences.size(0))
+    logits, _ = model(
+        inputs,
+        cond_vec=cond_vec,
+        targets=targets,
+        start_indices_batch=[[0]] * sequences.size(0),
+    )
     log_probs = F.log_softmax(logits, dim=-1)
     selected = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
 

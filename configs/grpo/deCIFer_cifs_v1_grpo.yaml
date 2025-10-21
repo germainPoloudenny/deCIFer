@@ -13,7 +13,7 @@ reference_checkpoint: null
 
 # Rollout generation
 # ------------------
-batch_size: 2
+batch_size: 512
 group_size: 4
 max_new_tokens: 512
 temperature: 1.0
