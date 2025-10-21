@@ -856,6 +856,7 @@ if __name__ == "__main__":
                 logits, loss = model(X, cond, Y, start_indices)
 
             X, Y, cond, start_indices = get_batch("train")
+            loss = loss / C.gradient_accumulation_steps
             scaler.scale(loss).backward()
             small_step_pbar.update(1)
 
