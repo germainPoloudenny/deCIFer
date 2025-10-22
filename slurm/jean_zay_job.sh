@@ -8,15 +8,16 @@
 #SBATCH --output=logs/task.out
 #SBATCH --ntasks-per-node=2
 #SBATCH --hint=nomultithread
+#SBATCH --cpus-per-task=32
 
 
 set -euo pipefail
 
 REPO_DIR='/home/gpoloudenny/Projects/deCIFer'
-COMMIT_HASH='2c2ce0228ebfabbc5f8b5d98b1060b9761e7e9b1'
-ORIGINAL_REF='beam_stoch'
-RUN_COMMAND='python bin/eval/beam_vs_rwp_filter.py  --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/structures/cifs_v1/serialized/test.h5 --out-root runs/deCIFer_cifs_v1_model/beam_search_vs_rwp_filter  --max-samples 1000'
-GENERATED_AT='20251019_123329'
+COMMIT_HASH='1f49b877f028220687ccf743d50041c933594296'
+ORIGINAL_REF='jz-debug'
+RUN_COMMAND='torchrun --nproc_per_node=2 bin/train.py --config configs/deCIFer_cifs_v1.yaml'
+GENERATED_AT='20251022_165430'
 
 mkdir -p "$WORK/deCIFer/logs"
 
@@ -43,7 +44,5 @@ trap cleanup EXIT
 
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
-
-
 
 eval "$RUN_COMMAND"
