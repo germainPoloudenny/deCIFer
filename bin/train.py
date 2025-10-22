@@ -180,6 +180,75 @@ def log_gradient_stats(model: torch.nn.Module, rank: int, *, prefix: str = "", m
     if inf_params:
         print(f"{header}: params_with_inf_gradients={inf_params}", flush=True)
 
+
+def log_batch_structure(
+    name: str,
+    batch: Optional[dict],
+    rank: int,
+    *,
+    prefix: str = "",
+    max_list_items: int = 3,
+) -> None:
+    """Log the structure and tensor statistics of a raw dataloader batch."""
+
+    header = f"[DEBUG][rank {rank}] {prefix}{name}"
+    if batch is None:
+        print(f"{header}: batch is None", flush=True)
+        return
+
+    if not isinstance(batch, dict):
+        print(f"{header}: unexpected batch type={type(batch).__name__}", flush=True)
+        return
+
+    keys = sorted(batch.keys())
+    print(f"{header}: keys={keys}", flush=True)
+
+    for key in keys:
+        value = batch[key]
+        value_name = f"{name}.{key}"
+        value_type = type(value).__name__
+
+        if torch.is_tensor(value):
+            log_tensor_stats(value_name, value, rank, prefix=prefix)
+            continue
+
+        if isinstance(value, np.ndarray):
+            tensor_value = torch.from_numpy(value)
+            log_tensor_stats(value_name, tensor_value, rank, prefix=prefix)
+            continue
+
+        if isinstance(value, (list, tuple)):
+            container_len = len(value)
+            sample_types = sorted({type(item).__name__ for item in value[:max_list_items]}) if container_len else []
+            print(
+                (
+                    f"{header}: {value_name} container_type={value_type} "
+                    f"len={container_len} sample_item_types={sample_types}"
+                ),
+                flush=True,
+            )
+            tensor_items = [item for item in value if torch.is_tensor(item)]
+            if tensor_items:
+                log_tensor_stats(f"{value_name}[0]", tensor_items[0], rank, prefix=prefix)
+            continue
+
+        if isinstance(value, str):
+            sample = value if len(value) <= 80 else f"{value[:77]}..."
+            print(
+                f"{header}: {value_name} type=str len={len(value)} sample={sample}",
+                flush=True,
+            )
+            continue
+
+        if isinstance(value, (int, float, bool)):
+            print(f"{header}: {value_name} value={value} ({value_type})", flush=True)
+            continue
+
+        print(
+            f"{header}: {value_name} unsupported_type={value_type}",
+            flush=True,
+        )
+
 class RandomBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last):
         super().__init__(sampler, batch_size, drop_last)
@@ -318,6 +387,10 @@ class TrainConfig:
     # Early stopping
     early_stopping_patience: int = 50
 
+    # Debugging utilities
+    stop_after_first_iteration: bool = False
+    debug_max_batch_logs: int = 2
+
 def parse_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=False, help="Path to .yaml config file")
@@ -357,6 +430,23 @@ def parse_config():
     # except:
     #     print(f"No metadata for vocab_size found, defaulting to {C.vocab_size}...")
     C.vocab_size = VOCAB_SIZE
+
+    env_stop_first_iter = os.environ.get("DECIFER_STOP_AFTER_FIRST_ITERATION")
+    if env_stop_first_iter is not None:
+        C.stop_after_first_iteration = env_stop_first_iter.lower() in {"1", "true", "yes", "on"}
+
+    env_debug_batch_logs = os.environ.get("DECIFER_DEBUG_MAX_BATCH_LOGS")
+    if env_debug_batch_logs is not None:
+        try:
+            C.debug_max_batch_logs = max(0, int(env_debug_batch_logs))
+        except ValueError:
+            print(
+                (
+                    "[WARN] Invalid value for DECIFER_DEBUG_MAX_BATCH_LOGS: "
+                    f"{env_debug_batch_logs}. Expected an integer."
+                ),
+                flush=True,
+            )
 
     return C
 
@@ -591,6 +681,20 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
+    if is_main_process and C.stop_after_first_iteration:
+        print(
+            "[INFO] Debug flag 'stop_after_first_iteration' enabled; training will exit after the first iteration.",
+            flush=True,
+        )
+    if is_main_process and getattr(C, "debug_max_batch_logs", 0) > 0:
+        print(
+            (
+                "[INFO] Debug logging enabled for raw dataloader batches: "
+                f"up to {C.debug_max_batch_logs} batches per split."
+            ),
+            flush=True,
+        )
+
     # Setup device-specific context
     device_type = "cuda" if C.device.startswith("cuda") else C.device
     if device_type == "cuda" and torch.cuda.is_available():
@@ -627,6 +731,28 @@ if __name__ == "__main__":
         'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
         'mask_prob': C.mask_prob,
     }
+
+    debug_max_batch_logs = max(0, int(getattr(C, "debug_max_batch_logs", 0)))
+    batch_debug_counters = {split: 0 for split in dataloaders.keys()}
+
+    def maybe_log_raw_batch(split: str, batch: dict, *, stage: str) -> None:
+        if not is_main_process or debug_max_batch_logs <= 0:
+            return
+
+        current_count = batch_debug_counters.get(split, 0)
+        if current_count >= debug_max_batch_logs:
+            return
+
+        prefix = f"{stage}." if stage else ""
+        print(
+            (
+                f"[DEBUG][rank {rank}] {prefix}{split}.raw_batch_logging "
+                f"entry={current_count + 1}/{debug_max_batch_logs}"
+            ),
+            flush=True,
+        )
+        log_batch_structure(f"{split}.raw_batch", batch, rank, prefix=prefix)
+        batch_debug_counters[split] = current_count + 1
 
     # Initialize training metrics
     training_metrics = {
@@ -785,6 +911,7 @@ if __name__ == "__main__":
                 leave=False,
             )
         last_progress = -0.1
+        fetch_count = 0
 
         def report_progress():
             nonlocal last_progress
@@ -810,6 +937,15 @@ if __name__ == "__main__":
                 data_iter = iter(dataloader)
                 data_iters[split] = data_iter
                 batch = next(data_iter)
+
+            fetch_count += 1
+            maybe_log_raw_batch(
+                split,
+                batch,
+                stage=(
+                    f"iter{training_metrics['iteration_number']}_{split}_fetch{fetch_count}"
+                ),
+            )
 
             # Fetch sequences and remove padding tokens
             sequences = batch['cif_tokens']
@@ -874,6 +1010,15 @@ if __name__ == "__main__":
                     data_iter = iter(dataloader)
                     data_iters[split] = data_iter
                     batch = next(data_iter)
+
+                fetch_count += 1
+                maybe_log_raw_batch(
+                    split,
+                    batch,
+                    stage=(
+                        f"iter{training_metrics['iteration_number']}_{split}_extra_fetch{fetch_count}"
+                    ),
+                )
 
                 sequences = batch['cif_tokens']
                 sequences = [torch.cat([seq[seq != PADDING_ID], torch.tensor([NEWLINE_ID, NEWLINE_ID], dtype=torch.long)]) for seq in sequences]
@@ -1252,6 +1397,23 @@ if __name__ == "__main__":
                 writer.add_scalar("train/lr", lr, training_metrics['iteration_number'])
         training_metrics['iteration_number'] += 1
         local_iteration_number += 1
+
+        if C.stop_after_first_iteration and training_metrics['iteration_number'] >= 1:
+            stop_training = True
+            if is_main_process:
+                print(
+                    "[INFO] Debug flag 'stop_after_first_iteration' reached; stopping training loop.",
+                    flush=True,
+                )
+            if use_distributed:
+                stop_tensor = torch.tensor(
+                    [1],
+                    device=torch.device(C.device)
+                    if device_type == "cuda" and torch.cuda.is_available()
+                    else torch.device("cpu"),
+                )
+                dist.broadcast(stop_tensor, src=0)
+            break
 
         if training_metrics['iteration_number'] > C.max_iters:
             stop_training = True
