@@ -217,7 +217,6 @@ trap cleanup EXIT
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
 
-export PYTORCH_FORCE_NO_FLASH=1
 
 eval "$RUN_COMMAND"
 """
