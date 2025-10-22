@@ -53,6 +53,133 @@ START_ID = TOKENIZER.token_to_id["data_"]
 PADDING_ID = TOKENIZER.padding_id
 NEWLINE_ID = TOKENIZER.token_to_id["\n"]
 
+
+def log_tensor_stats(name: str, tensor: Optional[torch.Tensor], rank: int, *, prefix: str = "", max_values: int = 5) -> None:
+    """Print detailed statistics for a tensor to help diagnose NaNs/Infs."""
+    header = f"[DEBUG][rank {rank}] {prefix}{name}"
+    if tensor is None:
+        print(f"{header}: tensor is None", flush=True)
+        return
+
+    if not isinstance(tensor, torch.Tensor):
+        print(f"{header}: object of type {type(tensor)} (expected torch.Tensor)", flush=True)
+        return
+
+    data = tensor.detach()
+    shape = tuple(data.shape)
+    numel = data.numel()
+    dtype = str(data.dtype)
+    device = str(data.device)
+
+    if numel == 0:
+        print(f"{header}: shape={shape}, numel=0, dtype={dtype}, device={device}", flush=True)
+        return
+
+    data_float = data.to(torch.float32)
+    finite_mask = torch.isfinite(data_float)
+    finite_count = int(finite_mask.sum().item())
+    nan_count = int(torch.isnan(data_float).sum().item())
+    inf_count = int(torch.isinf(data_float).sum().item())
+
+    if finite_count > 0:
+        finite_data = data_float[finite_mask]
+        min_val = float(finite_data.min().item())
+        max_val = float(finite_data.max().item())
+        mean_val = float(finite_data.mean().item())
+        std_val = float(finite_data.std(unbiased=False).item())
+    else:
+        min_val = float("nan")
+        max_val = float("nan")
+        mean_val = float("nan")
+        std_val = float("nan")
+
+    sample_values = data_float.view(-1)[:max_values].cpu().tolist()
+
+    print(
+        (
+            f"{header}: shape={shape}, numel={numel}, dtype={dtype}, device={device}, "
+            f"min={min_val:.6f}, max={max_val:.6f}, mean={mean_val:.6f}, std={std_val:.6f}, "
+            f"nan={nan_count}, inf={inf_count}, finite={finite_count}"
+        ),
+        flush=True,
+    )
+    print(f"{header}: sample_values={sample_values}", flush=True)
+
+
+def log_start_indices(start_indices_list: List[torch.Tensor], rank: int, *, prefix: str = "") -> None:
+    """Print statistics about start indices for batches."""
+    header = f"[DEBUG][rank {rank}] {prefix}start_indices"
+    batch_count = len(start_indices_list)
+    lengths = [int(t.numel()) for t in start_indices_list]
+    total_positions = sum(lengths)
+    min_len = min(lengths) if lengths else 0
+    max_len = max(lengths) if lengths else 0
+    sample_lengths = lengths[:10]
+    print(
+        (
+            f"{header}: batches={batch_count}, total_positions={total_positions}, "
+            f"min_per_batch={min_len}, max_per_batch={max_len}, sample_lengths={sample_lengths}"
+        ),
+        flush=True,
+    )
+    if start_indices_list:
+        first_indices = start_indices_list[0]
+        if isinstance(first_indices, torch.Tensor) and first_indices.numel() > 0:
+            sample_indices = first_indices[: min(10, first_indices.numel())].cpu().tolist()
+            print(f"{header}: first_batch_sample_indices={sample_indices}", flush=True)
+        else:
+            print(f"{header}: first batch has no start indices", flush=True)
+    else:
+        print(f"{header}: no start indices collected", flush=True)
+
+
+def log_gradient_stats(model: torch.nn.Module, rank: int, *, prefix: str = "", max_report: int = 5) -> None:
+    """Print gradient statistics for all model parameters."""
+    header = f"[DEBUG][rank {rank}] {prefix}gradients"
+    grad_norms = []
+    nan_params: List[str] = []
+    inf_params: List[str] = []
+    none_grads: List[str] = []
+
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            none_grads.append(name)
+            continue
+        grad = param.grad.detach().to(torch.float32)
+        if grad.numel() == 0:
+            continue
+        if torch.isnan(grad).any():
+            nan_params.append(name)
+        if torch.isinf(grad).any():
+            inf_params.append(name)
+        grad_norms.append(float(torch.norm(grad).item()))
+
+    if grad_norms:
+        min_norm = float(min(grad_norms))
+        max_norm = float(max(grad_norms))
+        mean_norm = float(sum(grad_norms) / len(grad_norms))
+    else:
+        min_norm = float("nan")
+        max_norm = float("nan")
+        mean_norm = float("nan")
+
+    print(
+        (
+            f"{header}: tracked_params={len(grad_norms)}, mean_norm={mean_norm:.6f}, "
+            f"min_norm={min_norm:.6f}, max_norm={max_norm:.6f}, none_grads={len(none_grads)}"
+        ),
+        flush=True,
+    )
+
+    if none_grads:
+        sample = none_grads[:max_report]
+        print(f"{header}: sample_params_without_grad={sample}", flush=True)
+
+    if nan_params:
+        print(f"{header}: params_with_nan_gradients={nan_params}", flush=True)
+    if inf_params:
+        print(f"{header}: params_with_inf_gradients={inf_params}", flush=True)
+
 class RandomBatchSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last):
         super().__init__(sampler, batch_size, drop_last)
@@ -233,7 +360,7 @@ def parse_config():
 
     return C
 
-def setup_datasets(C, distributed=False, show_progress=True):
+def setup_datasets(C, distributed=False, show_progress=True, rank=0):
     
     # Custom collate function
     def collate_fn(batch):
@@ -306,6 +433,9 @@ def setup_datasets(C, distributed=False, show_progress=True):
     val_h5 = os.path.join(C.dataset, "serialized/val.h5")
     test_h5 = os.path.join(C.dataset, "serialized/test.h5")
 
+    if rank == 0:
+        print("[DEBUG][rank 0] Initialising datasets with debug instrumentation", flush=True)
+
     train_dataset = DeciferDataset(
         train_h5,
         dataset_fields,
@@ -345,6 +475,15 @@ def setup_datasets(C, distributed=False, show_progress=True):
     train_dataset = apply_fraction(train_dataset)
     val_dataset = apply_fraction(val_dataset)
     test_dataset = apply_fraction(test_dataset)
+
+    print(
+        (
+            f"[DEBUG][rank {rank}] dataset sizes -> "
+            f"train={len(train_dataset)}, val={len(val_dataset)}, test={len(test_dataset)}, "
+            f"fraction={dataset_fraction}"
+        ),
+        flush=True,
+    )
         
     # Random batching sampler, train
     if distributed:
@@ -365,6 +504,14 @@ def setup_datasets(C, distributed=False, show_progress=True):
             "prefetch_factor": 2,
         })
     train_dataloader = DataLoader(train_dataset, **loader_kwargs)
+    print(
+        (
+            f"[DEBUG][rank {rank}] train_dataloader configured: "
+            f"batch_size={C.batch_size}, num_workers={C.num_workers_dataloader}, pin_memory={pin_memory}, "
+            f"distributed={distributed}"
+        ),
+        flush=True,
+    )
 
     # Random batching sampler, val
     val_sampler = SubsetRandomSampler(range(len(val_dataset)))
@@ -381,6 +528,13 @@ def setup_datasets(C, distributed=False, show_progress=True):
             "prefetch_factor": 2,
         })
     val_dataloader = DataLoader(val_dataset, **val_loader_kwargs)
+    print(
+        (
+            f"[DEBUG][rank {rank}] val_dataloader configured: "
+            f"batch_size={C.batch_size}, num_workers={C.num_workers_dataloader}, pin_memory={pin_memory}"
+        ),
+        flush=True,
+    )
 
     # Random batching sampler, test
     test_sampler = SubsetRandomSampler(range(len(test_dataset)))
@@ -397,6 +551,13 @@ def setup_datasets(C, distributed=False, show_progress=True):
             "prefetch_factor": 2,
         })
     test_dataloader = DataLoader(test_dataset, **test_loader_kwargs)
+    print(
+        (
+            f"[DEBUG][rank {rank}] test_dataloader configured: "
+            f"batch_size={C.batch_size}, num_workers={C.num_workers_dataloader}, pin_memory={pin_memory}"
+        ),
+        flush=True,
+    )
 
     # Combine loaders for easy access
     dataloaders = {
@@ -447,7 +608,12 @@ if __name__ == "__main__":
             print(f"TensorBoard logging to {C.tensorboard_log_dir}", flush=True)
 
     # Setup datasets
-    dataloaders, samplers = setup_datasets(C, distributed=use_distributed, show_progress=is_main_process)
+    dataloaders, samplers = setup_datasets(
+        C,
+        distributed=use_distributed,
+        show_progress=is_main_process,
+        rank=rank,
+    )
     sampler_epochs = {split: 0 for split in dataloaders.keys()}
 
     # Augmentation kwargs
@@ -669,6 +835,16 @@ if __name__ == "__main__":
                         discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
                     )
 
+            if is_main_process:
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] {split} fetch -> "
+                        f"added_sequences={len(sequences)}, total_sequences={len(total_sequences)}, "
+                        f"total_tokens={total_token_count}, cond_entries={len(cond_list)}"
+                    ),
+                    flush=True,
+                )
+
         if not total_sequences:
             raise RuntimeError("Failed to collect any sequences for batching.")
 
@@ -750,8 +926,21 @@ if __name__ == "__main__":
 
         report_progress()
 
+        if is_main_process:
+            print(
+                (
+                    f"[DEBUG][rank {rank}] {split} batch summary -> "
+                    f"sequences={len(total_sequences)}, total_tokens={total_token_count}, "
+                    f"num_batches={num_batches}, block_size={C.block_size}"
+                ),
+                flush=True,
+            )
+
         # Compute the lengths of sequences
         seq_lengths = torch.tensor([len(seq) for seq in total_sequences])
+
+        if is_main_process:
+            log_tensor_stats(f"{split}.seq_lengths", seq_lengths, rank)
 
         # Compute cumulative lengths to find sequence boundaries
         seq_cum_lengths = torch.cumsum(seq_lengths, dim=0)
@@ -772,6 +961,10 @@ if __name__ == "__main__":
         X_batch = total_tokens[:, :-1]
         Y_batch = total_tokens[:, 1:]
 
+        if is_main_process:
+            log_tensor_stats(f"{split}.X_batch_pre_device", X_batch, rank)
+            log_tensor_stats(f"{split}.Y_batch_pre_device", Y_batch, rank)
+
         # Find start indices within each batch
         start_token_mask = X_batch == START_ID
         start_indices = start_token_mask.nonzero(as_tuple=False)
@@ -785,6 +978,15 @@ if __name__ == "__main__":
         # Handle conditioning data if required
         cond_batch = None
         if C.condition:
+            if is_main_process:
+                sample_types = [type(entry).__name__ for entry in cond_list[:5]]
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] {split} conditioning summary -> "
+                        f"entries={len(cond_list)}, sample_entry_types={sample_types}"
+                    ),
+                    flush=True,
+                )
             tokens_used = num_batches * C.block_size
             if tokens_used == 0:
                 raise RuntimeError("Conditioning requested but no tokens were allocated to the batch.")
@@ -801,6 +1003,9 @@ if __name__ == "__main__":
 
             cond_list = cond_list[:num_sequences_used]
             cond_batch = torch.stack(cond_list)
+
+            if is_main_process:
+                log_tensor_stats(f"{split}.cond_batch_pre_trim", cond_batch, rank)
 
             required_conditionals = sum(len(indices) for indices in start_indices_list)
             if required_conditionals == 0:
@@ -825,6 +1030,13 @@ if __name__ == "__main__":
             if cond_batch is not None:
                 cond_batch = cond_batch.to(C.device)
 
+        if is_main_process:
+            log_tensor_stats(f"{split}.X_batch", X_batch, rank)
+            log_tensor_stats(f"{split}.Y_batch", Y_batch, rank)
+            if cond_batch is not None:
+                log_tensor_stats(f"{split}.cond_batch", cond_batch, rank)
+            log_start_indices(start_indices_list, rank, prefix=f"{split}.")
+
         return X_batch, Y_batch, cond_batch, start_indices_list
 
     @torch.no_grad()
@@ -841,7 +1053,23 @@ if __name__ == "__main__":
             for _ in range(eval_iters):
                 X, Y, cond, start_indices = get_batch(split)
                 with ctx:
-                    _, loss = model(X, cond, Y, start_indices)
+                    eval_logits, loss = model(X, cond, Y, start_indices)
+                if is_main_process:
+                    log_tensor_stats(
+                        f"eval.{split}.logits",
+                        eval_logits,
+                        rank,
+                        prefix=f"iter{training_metrics['iteration_number']}.",
+                    )
+                    loss_detached = loss.detach().to(torch.float32)
+                    print(
+                        (
+                            f"[DEBUG][rank {rank}] eval split={split} loss={float(loss_detached.item()):.6f} "
+                            f"nan={bool(torch.isnan(loss_detached).item())} "
+                            f"inf={bool(torch.isinf(loss_detached).item())}"
+                        ),
+                        flush=True,
+                    )
                 total_loss += loss.detach().to(loss_device, dtype=torch.float32)
 
             total_loss /= eval_iters
@@ -935,18 +1163,83 @@ if __name__ == "__main__":
             with ctx:
                 logits, loss = model(X, cond, Y, start_indices)
 
+            if is_main_process:
+                log_tensor_stats(
+                    "train.logits",
+                    logits,
+                    rank,
+                    prefix=f"iter{training_metrics['iteration_number']}_micro{micro_step}.",
+                )
+                loss_detached = loss.detach().to(torch.float32)
+                loss_value = float(loss_detached.item())
+                loss_nan = bool(torch.isnan(loss_detached).item())
+                loss_inf = bool(torch.isinf(loss_detached).item())
+                current_scale = scaler.get_scale() if hasattr(scaler, "get_scale") else float("nan")
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} micro={micro_step} "
+                        f"loss={loss_value:.6f} nan={loss_nan} inf={loss_inf} grad_scale={current_scale}"
+                    ),
+                    flush=True,
+                )
+
             X, Y, cond, start_indices = get_batch("train")
+            if is_main_process:
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} micro={micro_step} "
+                        f"next_batch_retrieved"
+                    ),
+                    flush=True,
+                )
             scaler.scale(loss).backward()
+            if is_main_process:
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} micro={micro_step} "
+                        "backward_pass_completed"
+                    ),
+                    flush=True,
+                )
             small_step_pbar.update(1)
 
         small_step_pbar.close()
         if C.grad_clip != 0.0:
             scaler.unscale_(optimizer)
+            if is_main_process:
+                log_gradient_stats(unwrap_model(model), rank, prefix=f"iter{training_metrics['iteration_number']}.")
             torch.nn.utils.clip_grad_norm_(model.parameters(), C.grad_clip)
+            if is_main_process:
+                print(
+                    (
+                        f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} grad_clip_applied="
+                        f"{C.grad_clip}"
+                    ),
+                    flush=True,
+                )
+        else:
+            if is_main_process:
+                log_gradient_stats(unwrap_model(model), rank, prefix=f"iter{training_metrics['iteration_number']} (no_clip).")
         scaler.step(optimizer)
         scaler.update()
+        if is_main_process:
+            updated_scale = scaler.get_scale() if hasattr(scaler, "get_scale") else float("nan")
+            print(
+                (
+                    f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} optimizer_step_completed "
+                    f"new_grad_scale={updated_scale}"
+                ),
+                flush=True,
+            )
 
         optimizer.zero_grad(set_to_none=True)
+        if is_main_process:
+            print(
+                (
+                    f"[DEBUG][rank {rank}] iter={training_metrics['iteration_number']} gradients_zeroed"
+                ),
+                flush=True,
+            )
 
         t1 = time.time()
         dt = t1 - t0
