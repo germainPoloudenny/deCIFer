@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modules",
         nargs="*",
-        default=["pytorch-gpu/py3/1.9.0"],
+        default=["pytorch-gpu/py3/2.3.1 "],
         help="Module list to load inside the batch job.",
     )
     return parser.parse_args()
