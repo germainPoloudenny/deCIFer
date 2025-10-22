@@ -19,7 +19,7 @@ tensorboard_log_dir: 'runs/deCIFer_cifs_v1_model/tensorboard'
 validate: True # validate with a validation set
 
 dataset: '../crystallography/data/structures/cifs_v1'
-batch_size: 128 # batch size
+batch_size: 256 # batch size
 block_size: 3076 # context window
 num_workers_dataloader: 4 # enable multi-process data loading
 
