@@ -388,7 +388,7 @@ class TrainConfig:
     early_stopping_patience: int = 50
 
     # Debugging utilities
-    stop_after_first_iteration: bool = False
+    stop_after_first_iteration: bool = True
     debug_max_batch_logs: int = 2
 
 def parse_config():
