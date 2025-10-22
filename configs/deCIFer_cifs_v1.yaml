@@ -8,7 +8,7 @@ log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'resume' # intialise from ["scratch", "resume"]
 
 device: 'cuda' # device
-dtype: 'bfloat16' # device dtype
+dtype: 'float32' # device dtype
 distributed: true # enable DistributedDataParallel
 dist_backend: 'nccl' # backend used for torch.distributed
 

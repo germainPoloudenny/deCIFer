@@ -8,7 +8,7 @@ log_interval: 1  # how often to print to the console (1 = every iteration)
 init_from: 'scratch' # intialise from ["scratch", "resume"]
 
 device: 'cuda' # device
-dtype: 'float32' # device dtype
+dtype: 'float16' # device dtype
 
 always_save_checkpoint: True # always save checkpoint
 
