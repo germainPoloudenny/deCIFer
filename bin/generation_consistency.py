@@ -151,7 +151,7 @@ def process_cif(
             rwp_value = rwp(iq.cpu().numpy(), iq_gen)
 
             # StructureMatcher RMSD
-            cif_rmsd, matcher_mode = get_rmsd(
+            cif_rmsd, matcher_mode, rmsd_failure_cause = get_rmsd(
                 cif_sample,
                 out_cif,
                 matcher,
@@ -167,6 +167,7 @@ def process_cif(
         results["rwp"].append(rwp_value)
         results["rmsd"].append(cif_rmsd)
         results["structure_match_mode"].append(matcher_mode)
+        results["rmsd_failure_cause"].append(rmsd_failure_cause)
         results["spacegroup_gen"].append(spacegroup_number_gen)
         results["crystal_system_gen"].append(crystal_system_gen)
         results["a_gen"].append(a_gen)

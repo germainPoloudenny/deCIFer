@@ -257,7 +257,7 @@ def _evaluate_generation(
             }
         )
 
-        rmsd_value, matcher_mode = get_rmsd(
+        rmsd_value, matcher_mode, rmsd_failure_cause = get_rmsd(
             cif_string_sample,
             cif_string_gen,
             matcher=matcher,
@@ -265,6 +265,7 @@ def _evaluate_generation(
         )
         result["rmsd"] = float(rmsd_value) if rmsd_value is not None else float("nan")
         result["structure_match_mode"] = matcher_mode
+        result["rmsd_failure_cause"] = rmsd_failure_cause
 
         clean_gen = generate_continuous_xrd_from_cif(
             cif_string_gen,

@@ -10,6 +10,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from collections import Counter
+import math
+
 from pymatgen.analysis.local_env import CrystalNN
 from pymatgen.core import Composition, Structure
 from pymatgen.io.cif import CifParser, CifBlock
@@ -863,10 +866,41 @@ def get_rmsd(cif_string_sample, cif_string_gen, matcher, supercell_matcher=None)
     reported. If no match is found using ``matcher`` and ``supercell_matcher`` is
     provided, the comparison is retried with the supercell-enabled matcher.
 
-    Returns a tuple ``(best_rmsd, mode)`` where ``mode`` is either ``"standard"``
-    when the primary matcher succeeds, ``"supercell"`` when the fallback matcher
-    provides a match, or ``None`` if no RMSD could be computed.
+    Returns a tuple ``(best_rmsd, mode, failure_cause)`` where ``mode`` is either
+    ``"standard"`` when the primary matcher succeeds, ``"supercell"`` when the
+    fallback matcher provides a match, or ``None`` if no RMSD could be computed.
+    ``failure_cause`` is ``None`` for successful matches; otherwise it encodes the
+    reason why the RMSD could not be evaluated (e.g. ``"atom_count_mismatch"``).
     """
+
+    def _species_counts(struct):
+        counts = Counter()
+        for site in struct:
+            for specie, amount in site.species.items():
+                counts[str(specie)] += float(amount)
+        return counts
+
+    def _same_composition(sample_struct, gen_struct) -> bool:
+        sample_counts = _species_counts(sample_struct)
+        gen_counts = _species_counts(gen_struct)
+        if sample_counts.keys() != gen_counts.keys():
+            return False
+        for specie in sample_counts:
+            if not math.isclose(
+                sample_counts[specie],
+                gen_counts[specie],
+                rel_tol=1e-6,
+                abs_tol=1e-8,
+            ):
+                return False
+        return True
+
+    def _classify_failure(sample_struct, gen_struct) -> str:
+        if len(sample_struct) != len(gen_struct):
+            return "atom_count_mismatch"
+        if not _same_composition(sample_struct, gen_struct):
+            return "composition_mismatch"
+        return "geometry_mismatch"
 
     def _standardized_variants(struct):
         """Return conventional and primitive variants of ``struct`` if available."""
@@ -896,7 +930,7 @@ def get_rmsd(cif_string_sample, cif_string_gen, matcher, supercell_matcher=None)
         structure_gen = Structure.from_str(cif_string_gen, fmt="cif")
     except Exception as e:
         print(e)
-        return None
+        return None, None, "invalid_structure"
 
     candidate_pairs = []
 
@@ -934,14 +968,15 @@ def get_rmsd(cif_string_sample, cif_string_gen, matcher, supercell_matcher=None)
 
     best_rmsd = _compute_best_rmsd(matcher)
     if best_rmsd is not None:
-        return best_rmsd, "standard"
+        return best_rmsd, "standard", None
 
     if supercell_matcher is not None:
         best_rmsd = _compute_best_rmsd(supercell_matcher)
         if best_rmsd is not None:
-            return best_rmsd, "supercell"
+            return best_rmsd, "supercell", None
 
-    return None, None
+    failure_cause = _classify_failure(structure_sample, structure_gen)
+    return None, None, failure_cause
 
 def plot_loss_curves(paths, ylog=True, xlog=False, xmin=None, xmax=None, ymin=None, ymax=None, offset=0.02, plot_metrics=True, figsize=(10, 5)):
     # Apply Seaborn style

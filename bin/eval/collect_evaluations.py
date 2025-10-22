@@ -93,6 +93,7 @@ def process_file(file_path):
             'l2_distance': l2_distance,
             'wd': wd_value,
             'rmsd': rmsd_value,
+            'rmsd_failure_cause': row.get('rmsd_failure_cause'),
             'cif_sample': cif_sample,
             'xrd_q_discrete_sample': xrd_q_discrete_sample,
             'xrd_iq_discrete_sample': xrd_iq_discrete_sample,

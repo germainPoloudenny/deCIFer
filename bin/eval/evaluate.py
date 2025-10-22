@@ -398,7 +398,7 @@ def worker(input_queue, eval_files_dir, done_queue):
                 evaluation_result_dict = get_cif_statistics(cif_string_gen, evaluation_result_dict)
 
                 # Evaluate matching structures by RMSD
-                rmsd, matcher_mode = get_rmsd(
+                rmsd, matcher_mode, rmsd_failure_cause = get_rmsd(
                     task['cif_string_sample'],
                     cif_string_gen,
                     matcher=matcher,
@@ -407,6 +407,7 @@ def worker(input_queue, eval_files_dir, done_queue):
                 evaluation_result_dict.update({
                     'rmsd': rmsd,
                     'structure_match_mode': matcher_mode,
+                    'rmsd_failure_cause': rmsd_failure_cause,
                 })
             
                 status.append('statistics')

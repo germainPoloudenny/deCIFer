@@ -237,7 +237,7 @@ class RMSDRewardScorer:
         if not is_sensible(cif_string_gen):
             return self.invalid_reward, {"rmsd": None, "mode": None}
 
-        rmsd, mode = get_rmsd(
+        rmsd, mode, failure_cause = get_rmsd(
             reference_cif,
             cif_string_gen,
             matcher=self.matcher,
@@ -251,11 +251,26 @@ class RMSDRewardScorer:
             )
             if fallback is not None:
                 reward_value, rwp_value = fallback
-                return reward_value, {"rmsd": None, "mode": "rwp", "rwp": rwp_value}
-            return self.invalid_reward, {"rmsd": None, "mode": mode, "rwp": None}
+                return reward_value, {
+                    "rmsd": None,
+                    "mode": "rwp",
+                    "rwp": rwp_value,
+                    "rmsd_failure_cause": failure_cause,
+                }
+            return self.invalid_reward, {
+                "rmsd": None,
+                "mode": mode,
+                "rwp": None,
+                "rmsd_failure_cause": failure_cause,
+            }
 
         reward = -float(rmsd) * 1.0
-        return reward, {"rmsd": float(rmsd), "mode": mode, "rwp": None}
+        return reward, {
+            "rmsd": float(rmsd),
+            "mode": mode,
+            "rwp": None,
+            "rmsd_failure_cause": None,
+        }
 
     def _score_with_rwp(
         self,

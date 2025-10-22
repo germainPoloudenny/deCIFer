@@ -158,6 +158,36 @@ def _print_validity_breakdown(frame: pd.DataFrame) -> None:
         print(_format_rate(label, frame[column]))
 
 
+def _print_rmsd_failure_breakdown(frame: pd.DataFrame) -> None:
+    if "rmsd" not in frame.columns or "rmsd_failure_cause" not in frame.columns:
+        return
+
+    numeric_rmsd = pd.to_numeric(frame["rmsd"], errors="coerce")
+    failure_mask = ~np.isfinite(numeric_rmsd)
+    failure_count = int(failure_mask.sum())
+    if failure_count == 0:
+        return
+
+    total = int(frame.shape[0])
+    cause_labels = {
+        "atom_count_mismatch": "Différence du nombre d'atomes",
+        "composition_mismatch": "Différence de composition",
+        "geometry_mismatch": "Incompatibilité géométrique",
+        "invalid_structure": "Structure invalide",
+        "unknown": "Cause inconnue",
+    }
+
+    print("\nAnalyse des échecs RMSD :")
+    print(f"    Total sans RMSD : {failure_count}/{total}")
+
+    cause_series = frame.loc[failure_mask, "rmsd_failure_cause"].fillna("unknown")
+    counts = cause_series.value_counts(dropna=False)
+    for cause, count in counts.items():
+        label = cause_labels.get(cause, str(cause))
+        proportion = count / failure_count if failure_count else float("nan")
+        print(f"    - {label:<32}: {proportion:>6.3f} ({int(count)}/{failure_count})")
+
+
 def _report_metrics(frame: pd.DataFrame) -> int:
     total = len(frame)
     print("=== Résultats de l'évaluation ===")
@@ -193,6 +223,7 @@ def _report_metrics(frame: pd.DataFrame) -> int:
                 "un alignement abouti.)"
             )
 
+    _print_rmsd_failure_breakdown(frame)
     _print_validity_breakdown(frame)
 
     seq_columns = ["seq_len_sample", "seq_len_gen"]
