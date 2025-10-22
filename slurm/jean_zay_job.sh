@@ -44,23 +44,6 @@ trap cleanup EXIT
 echo "[Jean Zay helper] Generated at $GENERATED_AT"
 echo "[Jean Zay helper] Running command: $RUN_COMMAND"
 
-# When launching distributed jobs with torchrun the default master
-# port (29500) can easily collide with other users on the same node.
-# Pick a free port dynamically unless the caller has already
-# specified one.
-if [[ "$RUN_COMMAND" == *torchrun* || "$RUN_COMMAND" == *torch.distributed.run* ]]; then
-    export MASTER_ADDR="${MASTER_ADDR:-$(hostname)}"
-    if [[ -z "${MASTER_PORT:-}" ]]; then
-        MASTER_PORT=$(python - <<'PY'
-import socket
-with socket.socket() as s:
-    s.bind(("", 0))
-    print(s.getsockname()[1])
-PY
-)
-        export MASTER_PORT
-    fi
-    echo "[Jean Zay helper] Using MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT"
-fi
+
 
 eval "$RUN_COMMAND"
