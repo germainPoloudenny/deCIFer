@@ -677,8 +677,24 @@ if __name__ == "__main__":
         args.num_workers = min(cpu_count() - 1, args.num_workers)
 
     # Make data prep directory and update data_dir
+    original_data_dir = args.data_dir
+
+    # ``--data-dir`` may point either to a directory or directly to an input
+    # archive (e.g. ``*.pkl.gz``).  In the latter case ``os.path.join`` would
+    # incorrectly attempt to create directories inside the file path.  Detect
+    # such situations and use the parent directory as the output location while
+    # keeping the original value for reference/metadata.
+    if (os.path.exists(args.data_dir) and not os.path.isdir(args.data_dir)) or \
+            args.data_dir.endswith((".pkl", ".pkl.gz")):
+        args.data_dir = os.path.dirname(args.data_dir)
+    if args.data_dir == "":
+        args.data_dir = "."
+
     args.data_dir = os.path.join(args.data_dir, args.name)
     os.makedirs(args.data_dir, exist_ok=True)
+
+    # Preserve the original argument to aid future processing/metadata.
+    args.original_data_dir = original_data_dir
 
     # Adjust debug_max if no limit is specified
     if args.debug_max == 0:
