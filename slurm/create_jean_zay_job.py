@@ -12,9 +12,9 @@ from datetime import datetime
 
 # Mapping des types de GPU -> partition / gres / contrainte
 GPU_PARTITIONS = {
-    "v100": {"partition": "gpu_p2", "gres": "gpu:2", "constraint": "v100"},
-    "a100": {"partition": "gpu_p5", "gres": "gpu:2", "constraint": "a100"},
-    "h100": {"partition": "gpu_p6", "gres": "gpu:2", "constraint": "h100"},
+    "v100": {"partition": "gpu_p2", "constraint": "v100", "default_gpus": 2},
+    "a100": {"partition": "gpu_p5", "constraint": "a100", "default_gpus": 2},
+    "h100": {"partition": "gpu_p6", "constraint": "h100", "default_gpus": 2},
 }
 
 GPU_DEFAULT_ACCOUNTS = {
@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(GPU_PARTITIONS),
         default=None,
         help="GPU type to request on Jean Zay (default: h100).",
+    )
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        default=None,
+        help="Number of GPUs to request per node (default depends on the GPU type).",
     )
     parser.add_argument(
         "--account",
@@ -135,7 +141,10 @@ def main() -> None:
         )
 
     partition_info = GPU_PARTITIONS[gpu_type]
-    gres = partition_info["gres"]
+    gpus = args.gpus or partition_info["default_gpus"]
+    if gpus <= 0:
+        raise SystemExit("GPU count must be a positive integer")
+    gres = f"gpu:{gpus}"
     partition = partition_info["partition"]
     constraint = partition_info["constraint"]
 
@@ -177,7 +186,7 @@ def main() -> None:
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
         f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
-        f"#SBATCH --gres={gres}",               # <<-- on demande bien 2 GPU
+        f"#SBATCH --gres={gres}",
     ]
     if account:
         header_lines.append(f"#SBATCH --account={account}")
@@ -237,7 +246,7 @@ eval "$RUN_COMMAND"
     account_display = account if account else "<none>"
     print(
         f"Generated {output_path} for commit {commit_hash} on partition {partition} "
-        f"with constraint {constraint} (account {account_display})."
+        f"with constraint {constraint} (gres {gres}, account {account_display})."
     )
 
 
