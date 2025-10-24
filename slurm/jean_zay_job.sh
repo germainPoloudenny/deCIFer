@@ -8,7 +8,7 @@
 #SBATCH --output=logs/task.out
 #SBATCH --ntasks-per-node=4
 #SBATCH --hint=nomultithread
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=16
 
 
 set -euo pipefail
