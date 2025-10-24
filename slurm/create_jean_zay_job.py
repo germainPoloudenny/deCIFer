@@ -196,7 +196,7 @@ def main() -> None:
             f"#SBATCH --output={log_file_name}",
             f"#SBATCH --ntasks-per-node={gpus}",
             f"#SBATCH --hint=nomultithread",
-            f"#SBATCH --cpus-per-task=32",
+            f"#SBATCH --cpus-per-task=16",
             "",
         ]
     )
