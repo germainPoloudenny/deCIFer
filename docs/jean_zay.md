@@ -94,13 +94,13 @@ If you prefer to describe your command in a plain text file and auto-generate a 
 echo "python -m decifer.train --config configs/train.yaml" > run_command.txt
 
 # Generate a SLURM script that pins the exact git commit
-python slurm/create_jean_zay_job.py run_command.txt --gpu-type a100 --job-name decifer-train
+python slurm/create_jean_zay_job.py run_command.txt --gpu-type a100 --gpu-count 2 --job-name decifer-train
 
 # Submit the generated script
 sbatch slurm/jean_zay_job.sh
 ```
 
-The generator captures the current commit hash and checks it out before executing the command, ensuring that updates pushed after submission do not change the code that runs on the cluster. Select the GPU type with `--gpu-type` (`v100`, `a100`, `h100`), and override resources such as wall time or memory if needed. The helper now validates that the account matches the GPU type (for example `nxk@h100` when `--gpu-type h100`) and exits with an explanatory error if they differ. Provide the correct account explicitly with `--account` when necessary.
+The generator captures the current commit hash and checks it out before executing the command, ensuring that updates pushed after submission do not change the code that runs on the cluster. Select the GPU type with `--gpu-type` (`v100`, `a100`, `h100`), request the number of accelerators with `--gpu-count`, and override resources such as wall time or memory if needed. The helper now validates that the account matches the GPU type (for example `nxk@h100` when `--gpu-type h100`) and exits with an explanatory error if they differ. Provide the correct account explicitly with `--account` when necessary.
 
 Monitor progress with `squeue -u $USER` and inspect logs with `tail -f $WORK/deCIFer/logs/train_<jobid>.out`.
 
