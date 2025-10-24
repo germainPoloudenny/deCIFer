@@ -27,7 +27,7 @@ GPU_DEFAULT_MODULES = {
     "h100": ["pytorch-gpu/py3/2.3.1"],
 }
 
-GPU_FALLBACK_MODULES = ["pytorch-gpu/py3/1.11.0"]
+GPU_FALLBACK_MODULES = ["pytorch-gpu/py3/2.3.0"]
 
 
 def run_git_command(*args: str) -> str:
