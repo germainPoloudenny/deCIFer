@@ -23,6 +23,12 @@ GPU_DEFAULT_ACCOUNTS = {
     "h100": "nxk@h100",
 }
 
+GPU_DEFAULT_MODULES = {
+    "h100": ["pytorch-gpu/py3/2.3.1"],
+}
+
+GPU_FALLBACK_MODULES = ["pytorch-gpu/py3/1.11.0"]
+
 
 def run_git_command(*args: str) -> str:
     try:
@@ -85,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modules",
         nargs="*",
-        default=["pytorch-gpu/py3/2.3.1"],
+        default=None,
         help="Module list to load inside the batch job.",
     )
     return parser.parse_args()
@@ -146,7 +152,12 @@ def main() -> None:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    modules = [module.strip() for module in args.modules if module and module.strip()]
+    if args.modules is None:
+        raw_modules = GPU_DEFAULT_MODULES.get(gpu_type, GPU_FALLBACK_MODULES)
+    else:
+        raw_modules = args.modules
+
+    modules = [module.strip() for module in raw_modules if module and module.strip()]
 
     modules_to_load: list[str] = []
     if gpu_type != "v100":
