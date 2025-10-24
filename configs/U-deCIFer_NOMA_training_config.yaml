@@ -11,11 +11,13 @@ device: 'cuda' # device
 dtype: 'float16' # device dtype
 
 always_save_checkpoint: True # always save checkpoint
+dist_backend: 'nccl' # backend used for torch.distributed
+
 
 validate: True # validate with a validation set
 
-dataset: 'data/noma/full' # path to dataset, can be to subset or full dataset
-batch_size: 32 # batch size
+dataset: '../crystallography/data/noma-1k' # path to dataset, can be to subset or full dataset
+batch_size: 256 # batch size
 block_size: 3076 # context window
 
 n_layer: 8 # n_layers
