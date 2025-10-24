@@ -1,263 +1,245 @@
 #!/usr/bin/env python3
-"""Utility to generate Jean Zay compliant SLURM scripts.
+"""Generate a Jean Zay ready SLURM script from a command file."""
 
-The helper reads a plain text file containing the command to execute and
-creates a submission script that can be launched with ``sbatch``. The generated
-script pins the current git commit to guarantee reproducibility and exposes a
-few knobs tailored to the Jean Zay GPU partitions.
-"""
 from __future__ import annotations
 
 import argparse
-import os
+import pathlib
 import shlex
 import subprocess
 import sys
-from pathlib import Path
-from typing import Iterable
+from datetime import datetime
 
-GPU_CONFIG = {
-    "v100": {
-        "partition": "gpu_p1",
-        "default_mem": "64G",
-    },
-    "a100": {
-        "partition": "gpu_p2",
-        "default_mem": "80G",
-    },
-    "h100": {
-        "partition": "gpu_h100",
-        "default_mem": "96G",
-    },
+# Mapping des types de GPU -> partition / gres / contrainte
+GPU_PARTITIONS = {
+    "v100": {"partition": "gpu_p2", "gres": "gpu:2", "constraint": "v100"},
+    "a100": {"partition": "gpu_p5", "gres": "gpu:2", "constraint": "a100"},
+    "h100": {"partition": "gpu_p6", "gres": "gpu:2", "constraint": "h100"},
 }
 
+GPU_DEFAULT_ACCOUNTS = {
+    "v100": "nxk@v100",
+    "a100": "nxk@a100",
+    "h100": "nxk@h100",
+}
 
-def _positive_int(value: str) -> int:
+GPU_DEFAULT_MODULES = {
+    "h100": ["pytorch-gpu/py3/2.3.1"],
+}
+
+GPU_FALLBACK_MODULES = ["pytorch-gpu/py3/2.3.0"]
+
+
+def run_git_command(*args: str) -> str:
     try:
-        parsed = int(value)
-    except ValueError as exc:  # pragma: no cover - argparse error handling
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be a positive integer")
-    return parsed
+        return (
+            subprocess.check_output(["git", *args], stderr=subprocess.STDOUT)
+            .decode()
+            .strip()
+        )
+    except subprocess.CalledProcessError as exc:  # pragma: no cover - defensive
+        print(exc.output.decode(), file=sys.stderr)
+        raise SystemExit(
+            "Failed to execute git command. Are you inside the repository?"
+        ) from exc
 
 
-def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    """Parse command line arguments."""
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a Jean Zay SLURM submission script from a command file.",
+        description=(
+            "Create a Jean Zay SLURM batch script from a command stored in a text file."
+        )
     )
     parser.add_argument(
         "command_file",
-        type=Path,
-        help="Path to a text file containing the command to execute (first non-empty line is used).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("slurm/jean_zay_job.sh"),
-        help="Path to the generated SLURM script (default: slurm/jean_zay_job.sh).",
-    )
-    parser.add_argument(
-        "--job-name",
-        default="decifer-job",
-        help="Name of the job displayed by squeue (default: decifer-job).",
+        type=pathlib.Path,
+        help="Path to the text file containing the command to run (first line is used).",
     )
     parser.add_argument(
         "--gpu-type",
-        choices=sorted(GPU_CONFIG),
-        default="a100",
-        help="GPU type to target (determines the partition).",
-    )
-    parser.add_argument(
-        "--gpu-count",
-        type=_positive_int,
-        default=1,
-        help="Number of GPUs to request with --gres (default: 1).",
-    )
-    parser.add_argument(
-        "--time",
-        default="20:00:00",
-        help="Maximum wall time requested with --time (default: 20:00:00).",
-    )
-    parser.add_argument(
-        "--cpus-per-task",
-        type=_positive_int,
-        default=32,
-        help="Number of CPUs to allocate per task (default: 8).",
-    )
-    parser.add_argument(
-        "--mem",
+        choices=sorted(GPU_PARTITIONS),
         default=None,
-        help="Amount of RAM to request (default depends on the GPU type).",
+        help="GPU type to request on Jean Zay (default: h100).",
     )
     parser.add_argument(
         "--account",
         default=None,
         help=(
-            "Accounting string to charge the job to. Falls back to $IDRIS_ACCOUNT or $SLURM_ACCOUNT when omitted."
+            "Slurm account to charge. Defaults to an account matching the selected GPU "
+            "type if available. You can use a suffix like nxk@v100."
         ),
     )
     parser.add_argument(
-        "--partition",
-        default=None,
-        help="Partition to use. When omitted the helper infers it from --gpu-type.",
+        "--output",
+        type=pathlib.Path,
+        default=pathlib.Path("slurm") / "jean_zay_job.sh",
+        help="Where to write the generated SLURM script.",
     )
     parser.add_argument(
-        "--log-dir",
-        type=Path,
+        "--job-name",
         default=None,
-        help="Directory where stdout/stderr logs are written (default: no explicit log path).",
+        help=(
+            "Job name to use for #SBATCH and the log file. Defaults to the command "
+            "file name."
+        ),
     )
     parser.add_argument(
-        "--mail-type",
-        default=None,
-        help="Optional SLURM --mail-type directive (e.g. ALL, FAIL).",
+        "--time",
+        default="12:00:00",
+        help="Wall clock limit in HH:MM:SS (default: 12 hours).",
     )
     parser.add_argument(
-        "--mail-user",
+        "--modules",
+        nargs="*",
         default=None,
-        help="Email recipient used together with --mail-type.",
+        help="Module list to load inside the batch job.",
     )
-    parser.add_argument(
-        "--constraint",
-        default=None,
-        help="Optional SLURM --constraint directive (advanced users only).",
-    )
-    return parser.parse_args(argv)
+    return parser.parse_args()
 
 
-def read_command(command_file: Path) -> str:
-    if not command_file.exists():
-        raise SystemExit(f"Command file {command_file} does not exist.")
-    lines = [line.strip() for line in command_file.read_text().splitlines()]
-    for line in lines:
-        if line and not line.startswith("#"):
-            return line
-    raise SystemExit("Command file does not contain a valid command.")
+def main() -> None:
+    args = parse_args()
 
+    if not args.command_file.exists():
+        raise SystemExit(f"Command file {args.command_file} does not exist")
 
-def detect_repo_root() -> Path:
-    try:
-        repo_root = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            text=True,
-        ).strip()
-    except subprocess.CalledProcessError as exc:  # pragma: no cover - environment guard
-        raise SystemExit("This script must be executed from inside a git repository.") from exc
-    return Path(repo_root)
+    command = args.command_file.read_text().strip()
+    if not command:
+        raise SystemExit("Command file is empty")
 
+    repo_root = pathlib.Path(run_git_command("rev-parse", "--show-toplevel")).resolve()
+    commit_hash = run_git_command("rev-parse", "HEAD")
+    current_branch = run_git_command("rev-parse", "--abbrev-ref", "HEAD")
 
-def current_commit() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except subprocess.CalledProcessError as exc:  # pragma: no cover - environment guard
-        raise SystemExit("Failed to obtain the current git commit.") from exc
+    gpu_type = args.gpu_type or "h100"
+    account = args.account
 
+    # Si l'account fourni est de la forme "xxx@v100|a100|h100", on en tient compte
+    account_gpu_suffix = None
+    if account and "@" in account:
+        _, _, account_gpu_suffix = account.partition("@")
+        if account_gpu_suffix and account_gpu_suffix not in GPU_PARTITIONS:
+            raise SystemExit(
+                f"Account '{account}' references unsupported GPU type "
+                f"'{account_gpu_suffix}'."
+            )
 
-def resolve_account(gpu_type: str, explicit_account: str | None) -> str | None:
-    account = explicit_account or os.getenv("IDRIS_ACCOUNT") or os.getenv("SLURM_ACCOUNT")
-    if account is None:
-        return None
-    suffix = f"@{gpu_type.lower()}"
-    if suffix not in account.lower():
+    if args.gpu_type is None and account_gpu_suffix:
+        gpu_type = account_gpu_suffix
+
+    if account_gpu_suffix and account_gpu_suffix != gpu_type:
         raise SystemExit(
-            "Account and GPU type mismatch. Provide an account ending with "
-            f"'{suffix}' or override with --account."
+            "The requested GPU type does not match the provided account. "
+            f"Account '{account}' cannot be used with GPU type '{gpu_type}'. "
+            "Please pass a matching --gpu-type or --account."
         )
-    return account
 
+    partition_info = GPU_PARTITIONS[gpu_type]
+    gres = partition_info["gres"]
+    partition = partition_info["partition"]
+    constraint = partition_info["constraint"]
 
-def render_header(args: argparse.Namespace, partition: str, account: str | None) -> list[str]:
-    log_dir = args.log_dir
-    if log_dir is not None:
-        log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = None
-    if log_dir is not None:
-        log_path = log_dir / "jean_zay_job_%j.out"
+    if account is None:
+        account = GPU_DEFAULT_ACCOUNTS.get(gpu_type)
 
-    header = [
+    output_path: pathlib.Path = args.output
+    if not output_path.parent.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    job_name = args.job_name or args.command_file.stem
+    job_name = job_name.replace(" ", "_")
+    log_file_name = f"logs/{job_name}.out"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if args.modules is None:
+        raw_modules = GPU_DEFAULT_MODULES.get(gpu_type, GPU_FALLBACK_MODULES)
+    else:
+        raw_modules = args.modules
+
+    modules = [module.strip() for module in raw_modules if module and module.strip()]
+
+    modules_to_load: list[str] = []
+    if gpu_type != "v100":
+        arch_module = f"arch/{gpu_type}"
+        if not any(module.startswith("arch/") for module in modules):
+            modules_to_load.append(arch_module)
+
+    modules_to_load.extend(modules)
+
+    if all(module != "git" for module in modules_to_load):
+        modules_to_load.append("git")
+
+    modules_block = "\n".join(f"module load {module}" for module in modules_to_load)
+
+    header_lines = [
         "#!/bin/bash",
-        f"#SBATCH --job-name={args.job_name}",
+        f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
-        f"#SBATCH --gres=gpu:{args.gpu_count}",
-        "#SBATCH --ntasks=1",
-        f"#SBATCH --cpus-per-task={args.cpus_per_task}",
-        f"#SBATCH --time={args.time}",
+        f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)
+        f"#SBATCH --gres={gres}",               # <<-- on demande bien 2 GPU
     ]
-    memory = args.mem or GPU_CONFIG[args.gpu_type]["default_mem"]
-    #header.append(f"#SBATCH --mem={memory}")
     if account:
-        header.append(f"#SBATCH --account={account}")
-    if log_path is not None:
-        header.append(f"#SBATCH --output={log_path}")
-        header.append(f"#SBATCH --error={log_path}")
-    if args.mail_type:
-        header.append(f"#SBATCH --mail-type={args.mail_type}")
-    if args.mail_user:
-        header.append(f"#SBATCH --mail-user={args.mail_user}")
-    if args.constraint:
-        header.append(f"#SBATCH --constraint={args.constraint}")
-    header.append("#SBATCH --hint=nomultithread")
-    return header
+        header_lines.append(f"#SBATCH --account={account}")
+    header_lines.extend(
+        [
+            f"#SBATCH --time={args.time}",
+            f"#SBATCH --output={log_file_name}",
+            f"#SBATCH --ntasks-per-node=2",
+            f"#SBATCH --hint=nomultithread",
+            f"#SBATCH --cpus-per-task=32",
+            "",
+        ]
+    )
 
+    job_script = "\n".join(header_lines)
 
-def write_script(
-    output_path: Path,
-    header_lines: list[str],
-    repo_root: Path,
-    commit: str,
-    command: str,
-) -> None:
-    repo_root_str = shlex.quote(str(repo_root))
-    header = "\n".join(header_lines)
-    body = f"""
+    job_script += f"""
+
 set -euo pipefail
 
-WORKDIR={repo_root_str}
-echo "==> Hostname: $(hostname)"
-echo "==> SLURM job id: $SLURM_JOB_ID"
-echo "==> Starting at: $(date)"
+REPO_DIR={str(repo_root)!r}
+COMMIT_HASH={commit_hash!r}
+ORIGINAL_REF={current_branch!r}
+RUN_COMMAND={shlex.quote(command)}
+GENERATED_AT={timestamp!r}
 
-echo "==> Working directory: $WORKDIR"
-cd "$WORKDIR"
+mkdir -p "$WORK/deCIFer/logs"
 
-# Ensure we execute the exact same commit that was active when creating the job.
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git fetch --all --tags --prune
-    git checkout {commit}
-fi
+cd "$REPO_DIR"
+echo "[Jean Zay helper] Restoring commit $COMMIT_HASH"
 
-COMMAND=$(cat <<'JOB_EOF'
-{command}
-JOB_EOF
-)
+echo "[Jean Zay helper] Using modules: {' '.join(modules_to_load)}"
+module purge
+{modules_block}
 
-echo "==> Launch command"
-echo "$COMMAND"
+git checkout $COMMIT_HASH
 
-srun --cpu-bind=none bash -lc "$COMMAND"
-""".strip("\n")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(f"{header}\n\n{body}\n")
-    output_path.chmod(0o755)
+cleanup() {{
+    if [ "$ORIGINAL_REF" != "HEAD" ]; then
+        git checkout "$ORIGINAL_REF" || true
+    fi
+}}
 
+trap cleanup EXIT
 
-def main(argv: Iterable[str] | None = None) -> int:
-    args = parse_args(argv)
-    command = read_command(args.command_file)
-    repo_root = detect_repo_root()
-    commit = current_commit()
+# Active un venv si présent, sinon continue (permet d'utiliser les modules directement)
 
-    partition = args.partition or GPU_CONFIG[args.gpu_type]["partition"]
-    account = resolve_account(args.gpu_type, args.account)
+echo "[Jean Zay helper] Generated at $GENERATED_AT"
+echo "[Jean Zay helper] Running command: $RUN_COMMAND"
 
-    header_lines = render_header(args, partition, account)
-    write_script(args.output, header_lines, repo_root, commit, command)
+eval "$RUN_COMMAND"
+"""
 
-    print(f"Wrote SLURM script to {args.output}")
-    return 0
+    output_path.write_text(job_script)
+    output_path.chmod(0o750)
+
+    account_display = account if account else "<none>"
+    print(
+        f"Generated {output_path} for commit {commit_hash} on partition {partition} "
+        f"with constraint {constraint} (account {account_display})."
+    )
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
-    sys.exit(main())
+if __name__ == "__main__":
+    main()
