@@ -183,7 +183,7 @@ def main() -> None:
 
     header_lines = [
         "#!/bin/bash",
-        f"#SBATCH --nodes=2"
+        f"#SBATCH --nodes=2",
         f"#SBATCH --job-name={job_name}",
         f"#SBATCH --partition={partition}",
         f"#SBATCH --constraint={constraint}",   # <<-- s'adapte (v100/a100/h100)

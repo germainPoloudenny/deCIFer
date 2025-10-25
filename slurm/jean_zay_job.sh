@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=task
+#SBATCH --nodes=2#SBATCH --job-name=task
 #SBATCH --partition=gpu_p6
 #SBATCH --constraint=h100
 #SBATCH --gres=gpu:4
@@ -14,10 +14,10 @@
 set -euo pipefail
 
 REPO_DIR='/home/gpoloudenny/Projects/deCIFer'
-COMMIT_HASH='6a0d761c13bbde4f5fc571b92aadfafa577950da'
+COMMIT_HASH='252344a2913705141e9b921dbd24ce38254d31aa'
 ORIGINAL_REF='grpo'
-RUN_COMMAND='torchrun --nproc_per_node=2 bin/train.py --config configs/deCIFer_cifs_v1.yaml'
-GENERATED_AT='20251025_003530'
+RUN_COMMAND='torchrun --nproc_per_node=4 bin/train.py --config configs/deCIFer_cifs_v1.yaml'
+GENERATED_AT='20251025_185817'
 
 mkdir -p "$WORK/deCIFer/logs"
 
