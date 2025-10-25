@@ -563,6 +563,21 @@ if __name__ == "__main__":
             data_iters[split] = iter(dataloader)
         data_iter = data_iters[split]
 
+        use_cuda = device_type == "cuda" and torch.cuda.is_available()
+        if use_cuda:
+            target_device = torch.device(C.device)
+        else:
+            target_device = torch.device("cpu")
+
+        def _move_to_target(tensor: torch.Tensor) -> torch.Tensor:
+            if tensor.device == target_device:
+                return tensor
+            if use_cuda:
+                if tensor.device.type == "cpu":
+                    return tensor.pin_memory().to(target_device, non_blocking=True)
+                return tensor.to(target_device, non_blocking=True)
+            return tensor.to(target_device)
+
         def _resolve_dataset_attr(dataset, attr, default=None):
             current_dataset = dataset
             while isinstance(current_dataset, Subset):
@@ -632,13 +647,32 @@ if __name__ == "__main__":
                 if has_precomputed_conditioning and 'xrd_cont' in batch:
                     cond_entries = batch['xrd_cont']
                     if isinstance(cond_entries, torch.Tensor):
+                        cond_entries = _move_to_target(cond_entries)
                         cond_list.extend(cond_entries)
                     else:
-                        cond_list.extend(list(cond_entries))
+                        for entry in cond_entries:
+                            if isinstance(entry, torch.Tensor):
+                                cond_list.append(_move_to_target(entry))
+                            else:
+                                cond_list.append(entry)
                 else:
-                    cond_list.extend(
-                        discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
-                    )
+                    xrd_q = batch['xrd.q']
+                    xrd_iq = batch['xrd.iq']
+                    if isinstance(xrd_q, torch.Tensor):
+                        xrd_q = _move_to_target(xrd_q)
+                    if isinstance(xrd_iq, torch.Tensor):
+                        xrd_iq = _move_to_target(xrd_iq)
+                    with torch.no_grad():
+                        cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
+                    if isinstance(cond_entries, torch.Tensor):
+                        cond_entries = _move_to_target(cond_entries)
+                        cond_list.extend(cond_entries)
+                    else:
+                        for entry in cond_entries:
+                            if isinstance(entry, torch.Tensor):
+                                cond_list.append(_move_to_target(entry))
+                            else:
+                                cond_list.append(entry)
 
         if not total_sequences:
             raise RuntimeError("Failed to collect any sequences for batching.")
@@ -683,13 +717,32 @@ if __name__ == "__main__":
                     if has_precomputed_conditioning and 'xrd_cont' in batch:
                         cond_entries = batch['xrd_cont']
                         if isinstance(cond_entries, torch.Tensor):
+                            cond_entries = _move_to_target(cond_entries)
                             cond_list.extend(cond_entries)
                         else:
-                            cond_list.extend(list(cond_entries))
+                            for entry in cond_entries:
+                                if isinstance(entry, torch.Tensor):
+                                    cond_list.append(_move_to_target(entry))
+                                else:
+                                    cond_list.append(entry)
                     else:
-                        cond_list.extend(
-                            discrete_to_continuous_xrd(batch['xrd.q'], batch['xrd.iq'], **augmentation_kwargs)['iq']
-                        )
+                        xrd_q = batch['xrd.q']
+                        xrd_iq = batch['xrd.iq']
+                        if isinstance(xrd_q, torch.Tensor):
+                            xrd_q = _move_to_target(xrd_q)
+                        if isinstance(xrd_iq, torch.Tensor):
+                            xrd_iq = _move_to_target(xrd_iq)
+                        with torch.no_grad():
+                            cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
+                        if isinstance(cond_entries, torch.Tensor):
+                            cond_entries = _move_to_target(cond_entries)
+                            cond_list.extend(cond_entries)
+                        else:
+                            for entry in cond_entries:
+                                if isinstance(entry, torch.Tensor):
+                                    cond_list.append(_move_to_target(entry))
+                                else:
+                                    cond_list.append(entry)
                 continue
 
             # Final fallback: repeat collected sequences to satisfy the required block size
@@ -785,16 +838,10 @@ if __name__ == "__main__":
                     cond_batch = cond_batch[:required_conditionals]
 
         # Send to device (CUDA/CPU)
-        if device_type == "cuda" and torch.cuda.is_available():
-            X_batch = X_batch.pin_memory().to(C.device, non_blocking=True)
-            Y_batch = Y_batch.pin_memory().to(C.device, non_blocking=True)
-            if cond_batch is not None:
-                cond_batch = cond_batch.pin_memory().to(C.device, non_blocking=True)
-        else:
-            X_batch = X_batch.to(C.device)
-            Y_batch = Y_batch.to(C.device)
-            if cond_batch is not None:
-                cond_batch = cond_batch.to(C.device)
+        X_batch = _move_to_target(X_batch)
+        Y_batch = _move_to_target(Y_batch)
+        if cond_batch is not None:
+            cond_batch = _move_to_target(cond_batch)
 
         return X_batch, Y_batch, cond_batch, start_indices_list
 
