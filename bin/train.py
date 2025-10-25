@@ -295,7 +295,7 @@ if __name__ == "__main__":
 
         # Find checkpoint
         ckpt_path = os.path.join(C.out_dir, "ckpt.pt")
-        checkpoint = torch.load(ckpt_path, map_location=C.device)
+        checkpoint = torch.load(ckpt_path, map_location=C.device,weights_only=False)
         checkpoint_model_args = checkpoint["model_args"]
 
         # Force these config attributes to be equal otherwise we can't even resume training
