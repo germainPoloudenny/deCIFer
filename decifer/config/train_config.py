@@ -40,9 +40,6 @@ class TrainConfig:
     # PXRD embedder
     condition: bool = False
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
-    precompute_conditioning: bool = False
-    precompute_conditioning_batch_size: int = 512
-    conditioning_cache_dir: Optional[str] = None
 
     # Augmentation at training time
     qmin: float = 0.0

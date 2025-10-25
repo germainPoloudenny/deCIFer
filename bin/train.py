@@ -141,9 +141,6 @@ class TrainConfig:
     # PXRD embedder
     condition: bool = False
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
-    precompute_conditioning: bool = False
-    precompute_conditioning_batch_size: int = 512
-
     # Augmentation at training time
     qmin: float = 0.0
     qmax: float = 10.0
@@ -230,7 +227,7 @@ def parse_config():
 
     return C
 
-def setup_datasets(C, distributed=False, show_progress=True):
+def setup_datasets(C, distributed=False, show_progress=True, *, rank: int = 0, world_size: int = 1):
     
     # Custom collate function
     def collate_fn(batch):
@@ -253,54 +250,22 @@ def setup_datasets(C, distributed=False, show_progress=True):
     # Collect relevant data
     dataset_fields = ["cif_tokens", "xrd.q", "xrd.iq"]
 
-    dataset_kwargs = {}
-
-    if getattr(C, "condition", False) and getattr(C, "precompute_conditioning", False):
-        conditioning_kwargs = {
-            'qmin': C.qmin,
-            'qmax': C.qmax,
-            'qstep': C.qstep,
-            'fwhm_range': (C.fwhm_range_min, C.fwhm_range_max),
-            'eta_range': (C.eta_range_min, C.eta_range_max),
-            'noise_range': (C.noise_range_min, C.noise_range_max),
-            'intensity_scale_range': (C.intensity_scale_range_min, C.intensity_scale_range_max),
-            'mask_prob': C.mask_prob,
-        }
-        dataset_kwargs.update(
-            {
-                'precompute_conditioning': True,
-                'conditioning_kwargs': conditioning_kwargs,
-                'precompute_batch_size': getattr(C, 'precompute_conditioning_batch_size', 512),
-                'conditioning_device': C.device,
-            }
-        )
-
     # Initialise datasets/loaders
     train_h5 = os.path.join(C.dataset, "serialized/train.h5")
     val_h5 = os.path.join(C.dataset, "serialized/val.h5")
     test_h5 = os.path.join(C.dataset, "serialized/test.h5")
 
-    train_dataset = DeciferDataset(
-        train_h5,
-        dataset_fields,
-        progress_desc="train dataset",
-        show_progress=show_progress,
-        **dataset_kwargs,
-    )
-    val_dataset = DeciferDataset(
-        val_h5,
-        dataset_fields,
-        progress_desc="validation dataset",
-        show_progress=show_progress,
-        **dataset_kwargs,
-    )
-    test_dataset = DeciferDataset(
-        test_h5,
-        dataset_fields,
-        progress_desc="test dataset",
-        show_progress=show_progress,
-        **dataset_kwargs,
-    )
+    def _build_dataset(split_name: str, h5_path: str, desc: str) -> DeciferDataset:
+        return DeciferDataset(
+            h5_path,
+            dataset_fields,
+            progress_desc=desc,
+            show_progress=show_progress,
+        )
+
+    train_dataset = _build_dataset("train", train_h5, "train dataset")
+    val_dataset = _build_dataset("val", val_h5, "validation dataset")
+    test_dataset = _build_dataset("test", test_h5, "test dataset")
 
     dataset_fraction = float(getattr(C, "dataset_fraction", 1.0))
     if not (0.0 < dataset_fraction <= 1.0):
@@ -418,7 +383,13 @@ if __name__ == "__main__":
             print(f"TensorBoard logging to {C.tensorboard_log_dir}", flush=True)
 
     # Setup datasets
-    dataloaders, samplers = setup_datasets(C, distributed=use_distributed, show_progress=is_main_process)
+    dataloaders, samplers = setup_datasets(
+        C,
+        distributed=use_distributed,
+        show_progress=is_main_process,
+        rank=rank,
+        world_size=world_size,
+    )
     sampler_epochs = {split: 0 for split in dataloaders.keys()}
 
     # Augmentation kwargs
@@ -578,16 +549,6 @@ if __name__ == "__main__":
                 return tensor.to(target_device, non_blocking=True)
             return tensor.to(target_device)
 
-        def _resolve_dataset_attr(dataset, attr, default=None):
-            current_dataset = dataset
-            while isinstance(current_dataset, Subset):
-                current_dataset = current_dataset.dataset
-            return getattr(current_dataset, attr, default)
-
-        has_precomputed_conditioning = bool(
-            _resolve_dataset_attr(dataloader.dataset, "has_precomputed_conditioning", False)
-        )
-
         # Initialize lists to store packed sequences and start indices
         start_indices_list = []
         cond_list = []
@@ -644,35 +605,23 @@ if __name__ == "__main__":
 
             # Fetch conditioning and augment to cont signals
             if C.condition:
-                if has_precomputed_conditioning and 'xrd_cont' in batch:
-                    cond_entries = batch['xrd_cont']
-                    if isinstance(cond_entries, torch.Tensor):
-                        cond_entries = _move_to_target(cond_entries)
-                        cond_list.extend(cond_entries)
-                    else:
-                        for entry in cond_entries:
-                            if isinstance(entry, torch.Tensor):
-                                cond_list.append(_move_to_target(entry))
-                            else:
-                                cond_list.append(entry)
+                xrd_q = batch['xrd.q']
+                xrd_iq = batch['xrd.iq']
+                if isinstance(xrd_q, torch.Tensor):
+                    xrd_q = _move_to_target(xrd_q)
+                if isinstance(xrd_iq, torch.Tensor):
+                    xrd_iq = _move_to_target(xrd_iq)
+                with torch.no_grad():
+                    cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
+                if isinstance(cond_entries, torch.Tensor):
+                    cond_entries = _move_to_target(cond_entries)
+                    cond_list.extend(cond_entries)
                 else:
-                    xrd_q = batch['xrd.q']
-                    xrd_iq = batch['xrd.iq']
-                    if isinstance(xrd_q, torch.Tensor):
-                        xrd_q = _move_to_target(xrd_q)
-                    if isinstance(xrd_iq, torch.Tensor):
-                        xrd_iq = _move_to_target(xrd_iq)
-                    with torch.no_grad():
-                        cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
-                    if isinstance(cond_entries, torch.Tensor):
-                        cond_entries = _move_to_target(cond_entries)
-                        cond_list.extend(cond_entries)
-                    else:
-                        for entry in cond_entries:
-                            if isinstance(entry, torch.Tensor):
-                                cond_list.append(_move_to_target(entry))
-                            else:
-                                cond_list.append(entry)
+                    for entry in cond_entries:
+                        if isinstance(entry, torch.Tensor):
+                            cond_list.append(_move_to_target(entry))
+                        else:
+                            cond_list.append(entry)
 
         if not total_sequences:
             raise RuntimeError("Failed to collect any sequences for batching.")
@@ -714,35 +663,23 @@ if __name__ == "__main__":
                         seq_progress.update(update_amount)
                 report_progress()
                 if C.condition:
-                    if has_precomputed_conditioning and 'xrd_cont' in batch:
-                        cond_entries = batch['xrd_cont']
-                        if isinstance(cond_entries, torch.Tensor):
-                            cond_entries = _move_to_target(cond_entries)
-                            cond_list.extend(cond_entries)
-                        else:
-                            for entry in cond_entries:
-                                if isinstance(entry, torch.Tensor):
-                                    cond_list.append(_move_to_target(entry))
-                                else:
-                                    cond_list.append(entry)
+                    xrd_q = batch['xrd.q']
+                    xrd_iq = batch['xrd.iq']
+                    if isinstance(xrd_q, torch.Tensor):
+                        xrd_q = _move_to_target(xrd_q)
+                    if isinstance(xrd_iq, torch.Tensor):
+                        xrd_iq = _move_to_target(xrd_iq)
+                    with torch.no_grad():
+                        cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
+                    if isinstance(cond_entries, torch.Tensor):
+                        cond_entries = _move_to_target(cond_entries)
+                        cond_list.extend(cond_entries)
                     else:
-                        xrd_q = batch['xrd.q']
-                        xrd_iq = batch['xrd.iq']
-                        if isinstance(xrd_q, torch.Tensor):
-                            xrd_q = _move_to_target(xrd_q)
-                        if isinstance(xrd_iq, torch.Tensor):
-                            xrd_iq = _move_to_target(xrd_iq)
-                        with torch.no_grad():
-                            cond_entries = discrete_to_continuous_xrd(xrd_q, xrd_iq, **augmentation_kwargs)['iq']
-                        if isinstance(cond_entries, torch.Tensor):
-                            cond_entries = _move_to_target(cond_entries)
-                            cond_list.extend(cond_entries)
-                        else:
-                            for entry in cond_entries:
-                                if isinstance(entry, torch.Tensor):
-                                    cond_list.append(_move_to_target(entry))
-                                else:
-                                    cond_list.append(entry)
+                        for entry in cond_entries:
+                            if isinstance(entry, torch.Tensor):
+                                cond_list.append(_move_to_target(entry))
+                            else:
+                                cond_list.append(entry)
                 continue
 
             # Final fallback: repeat collected sequences to satisfy the required block size

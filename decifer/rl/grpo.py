@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-import time
 from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -156,9 +153,6 @@ class GRPOConfig:
     add_composition: bool = True
     add_spacegroup: bool = False
     conditioning_kwargs: Dict[str, Any] = field(default_factory=dict)
-    precompute_conditioning: bool = False
-    precompute_conditioning_batch_size: int = 512
-    conditioning_cache_dir: Optional[str] = None
     device: str = "cuda"
     dtype: str = "float32"
     num_workers: int = 0
@@ -565,31 +559,11 @@ class GRPOTrainer:
         dataset_path = self._resolve_dataset_path(self.config.dataset, self.config.dataset_split)
 
         data_keys = ["cif_tokens", "xrd.q", "xrd.iq", "cif_string", "cif_name"]
-        dataset_kwargs: Dict[str, Any] = {}
-        cache_path: Optional[str] = None
-        if self.config.precompute_conditioning:
-            if not self.config.conditioning_kwargs:
-                raise ValueError(
-                    "precompute_conditioning=True requires conditioning_kwargs to be provided "
-                    "for generating continuous XRD patterns."
-                )
-            dataset_kwargs = {
-                "precompute_conditioning": True,
-                "conditioning_kwargs": self.config.conditioning_kwargs,
-                "precompute_batch_size": self.config.precompute_conditioning_batch_size,
-                "conditioning_device": self.device,
-                "progress_desc": f"{self.config.dataset_split} dataset",
-                "show_progress": self.rank == 0,
-            }
-            cache_path = self._resolve_conditioning_cache_path(dataset_path)
-            if cache_path is not None:
-                if self.world_size > 1 and self.rank != 0 and not os.path.exists(cache_path):
-                    self._wait_for_conditioning_cache(cache_path)
-                dataset_kwargs["conditioning_cache_path"] = cache_path
         self.dataset = DeciferDataset(
             dataset_path,
             data_keys,
-            **dataset_kwargs,
+            progress_desc=f"{self.config.dataset_split} dataset",
+            show_progress=self.rank == 0,
         )
         sampler = RandomSampler(self.dataset)
         self.data_loader = DataLoader(
@@ -669,41 +643,6 @@ class GRPOTrainer:
 
         return base_device
 
-    def _wait_for_conditioning_cache(
-        self,
-        cache_path: str,
-        *,
-        poll_interval: float = 1.0,
-        timeout: float = 3600.0,
-    ) -> None:
-        if os.path.exists(cache_path):
-            return
-
-        start_time = time.monotonic()
-        notified = False
-        while not os.path.exists(cache_path):
-            if timeout > 0 and (time.monotonic() - start_time) > timeout:
-                if not notified:
-                    print(
-                        f"[WARN] Rank {self.rank}: timeout while waiting for conditioning cache at {cache_path}; "
-                        "proceeding without synchronization.",
-                        flush=True,
-                    )
-                return
-            if not notified:
-                print(
-                    f"[INFO] Rank {self.rank}: waiting for conditioning cache at {cache_path}...",
-                    flush=True,
-                )
-                notified = True
-            time.sleep(poll_interval)
-
-        if notified:
-            print(
-                f"[INFO] Rank {self.rank}: detected conditioning cache at {cache_path}.",
-                flush=True,
-            )
-
     def _should_use_data_parallel(self) -> bool:
         return (
             self.config.data_parallel
@@ -755,29 +694,6 @@ class GRPOTrainer:
         raise FileNotFoundError(
             f"Dataset path '{dataset}' does not exist or is not accessible."
         )
-
-    def _resolve_conditioning_cache_path(self, dataset_path: str) -> Optional[str]:
-        cache_dir = self.config.conditioning_cache_dir
-        if cache_dir is None:
-            cache_dir = os.path.join(self.config.out_dir, "conditioning_cache")
-
-        cache_dir = os.path.abspath(os.path.expanduser(cache_dir))
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-        except OSError:
-            return None
-
-        cache_version = getattr(DeciferDataset, "_CACHE_VERSION", 1)
-        split_name = self.config.dataset_split or "train"
-        key_data = {
-            "split": split_name,
-            "dataset_path": os.path.abspath(dataset_path),
-            "conditioning_kwargs": self.config.conditioning_kwargs,
-            "version": cache_version,
-        }
-        key_json = json.dumps(key_data, sort_keys=True)
-        digest = hashlib.sha1(key_json.encode("utf-8")).hexdigest()[:12]
-        return os.path.join(cache_dir, f"{split_name}_{digest}.pt")
 
     @staticmethod
     def _unwrap_model(model: Decifer) -> Decifer:

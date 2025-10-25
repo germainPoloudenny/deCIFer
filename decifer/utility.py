@@ -3,7 +3,9 @@
 import re
 import math
 import logging
-from typing import Optional, Tuple
+import os
+from typing import Dict, Optional, Tuple, Union
+
 import torch
 import h5py
 import numpy as np
@@ -189,6 +191,7 @@ def discrete_to_continuous_xrd(
     iq_cont = torch.clamp(iq_cont, min=0.0)
 
     return {'q': q_cont, 'iq': iq_cont}
+
 
 def generate_continuous_xrd_from_cif(
     cif_string,
