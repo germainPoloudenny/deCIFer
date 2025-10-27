@@ -98,6 +98,7 @@ def discrete_to_continuous_xrd(
     noise_range: Optional[Tuple[float, float]] = (0.001, 0.05),
     intensity_scale_range: Optional[Tuple[float, float]] =(0.95, 1.0),
     mask_prob: Optional[float] = 0.1,
+    chunk_size: Optional[int] = None,
     **kwargs, # Ignoring
 ):
     """
@@ -119,8 +120,10 @@ def discrete_to_continuous_xrd(
             continuous intensities. Default is (0.001, 0.05).
         intensity_scale_range (Tuple[float, float], optional): The range for random scaling of 
             iq values. Default is (0.95, 1.0).
-        mask_prob (float, optional): The probability of masking random regions of the 
+        mask_prob (float, optional): The probability of masking random regions of the
             continuous intensities. Default is 0.1.
+        chunk_size (int, optional): Number of peaks processed per chunk when converting the
+            discrete representation. Defaults to a heuristic based on the number of q points.
 
     Returns:
         dict: A dictionary with the following keys:
@@ -143,6 +146,10 @@ def discrete_to_continuous_xrd(
     q_cont = torch.arange(qmin, qmax, qstep, device=device, dtype=dtype)  # Shape: (num_q_points,)
     batch_size = batch_q.shape[0]
     num_q_points = q_cont.shape[0]
+    max_num_peaks = batch_q.shape[1]
+
+    if chunk_size is None:
+        chunk_size = max(1, min(max_num_peaks, max(1, num_q_points // 4)))
 
     # Sample random FWHM, eta, noise, and intensity scale values for each sample
     fwhm = torch.empty(batch_size, 1, 1, device=device, dtype=dtype).uniform_(*fwhm_range)  # Shape: (batch_size, 1, 1)
@@ -161,17 +168,25 @@ def discrete_to_continuous_xrd(
     # Expand dimensions for broadcasting
     q_cont_expanded = q_cont.view(1, num_q_points, 1)            # Shape: (1, num_q_points, 1)
     batch_q_expanded = batch_q.unsqueeze(1)                      # Shape: (batch_size, 1, max_num_peaks)
-    delta_q = q_cont_expanded - batch_q_expanded                 # Shape: (batch_size, num_q_points, max_num_peaks)
-
-    # Compute Gaussian and Lorentzian components
-    gaussian_component = torch.exp(-0.5 * (delta_q / sigma_gauss) ** 2)
-    lorentzian_component = 1 / (1 + (delta_q / gamma_lorentz) ** 2)
-    pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
 
     # Apply peak intensities and filter out padded values
     batch_iq_expanded = batch_iq.unsqueeze(1)                    # Shape: (batch_size, 1, max_num_peaks)
     valid_peaks = (batch_q_expanded != 0).float()                # Shape: (batch_size, 1, max_num_peaks)
-    iq_cont = (pseudo_voigt * batch_iq_expanded * valid_peaks).sum(dim=2)  # Shape: (batch_size, num_q_points)
+    iq_cont = torch.zeros(batch_size, num_q_points, device=device, dtype=batch_iq.dtype)
+
+    for q_chunk, iq_chunk, valid_chunk in zip(
+        batch_q_expanded.split(chunk_size, dim=2),
+        batch_iq_expanded.split(chunk_size, dim=2),
+        valid_peaks.split(chunk_size, dim=2),
+    ):
+        delta_q = q_cont_expanded - q_chunk
+
+        # Compute Gaussian and Lorentzian components
+        gaussian_component = torch.exp(-0.5 * (delta_q / sigma_gauss) ** 2)
+        lorentzian_component = 1 / (1 + (delta_q / gamma_lorentz) ** 2)
+        pseudo_voigt = eta * lorentzian_component + (1 - eta) * gaussian_component
+
+        iq_cont += (pseudo_voigt * iq_chunk * valid_chunk).sum(dim=2)
 
     # Normalize
     iq_cont /= (iq_cont.max(dim=1, keepdim=True)[0] + 1e-16)
