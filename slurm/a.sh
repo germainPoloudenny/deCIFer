@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --job-name=task
+#SBATCH --job-name=a
 #SBATCH --partition=gpu_p5
 #SBATCH --constraint=a100
 #SBATCH --gres=gpu:2
