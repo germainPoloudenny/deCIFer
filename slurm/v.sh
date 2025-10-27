@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --account=nxk@v100
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/task.out
+#SBATCH --output=logs/v.out
 #SBATCH --ntasks-per-node=2
 #SBATCH --hint=nomultithread
 #SBATCH --cpus-per-task=12

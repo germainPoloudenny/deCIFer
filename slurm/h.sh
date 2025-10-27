@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --account=nxk@h100
 #SBATCH --time=12:00:00
-#SBATCH --output=logs/task.out
+#SBATCH --output=logs/h.out
 #SBATCH --ntasks-per-node=2
 #SBATCH --hint=nomultithread
 #SBATCH --cpus-per-task=48
@@ -25,4 +25,4 @@ module load git
 
 git checkout grpo
 
-python bin/eval/conditioning_decoding_sweep.py   --model-ckpt runs/deCIFer_cifs_v1_model/ckpt_eval.pt --dataset-path ../crystallography/data/noma-1k/serialized/test.h5 --out-root runs/deCIFer_cifs_v1_model/conditioning_decoding_sweep --max-samples 1000 --collect-top-k-metric rmsd
+torchrun --nproc_per_node=2 bin/train.py --config configs/deCIFer_cifs_v1.yaml
