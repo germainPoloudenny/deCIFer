@@ -123,6 +123,26 @@ def process(folder, debug_max=None) -> pd.DataFrame:
     data_list = [res for res in results if res is not None]
     return pd.DataFrame(data_list)
 
+def summarize(df: pd.DataFrame) -> pd.Series:
+    """Returns a compact summary of the evaluation metrics."""
+    if df.empty:
+        return pd.Series(dtype=object)
+
+    summary = pd.Series({
+        'count': len(df),
+        'valid_count': int(df['validity'].sum()),
+        'valid_ratio': df['validity'].mean(),
+        'match_count': int(df['rmsd'].notna().sum()),
+        'match_rate': df['rmsd'].notna().mean(),
+        'mean_rwp': df['rwp'].mean(),
+        'median_rwp': df['rwp'].median(),
+        'mean_wd': df['wd'].mean(),
+        'median_wd': df['wd'].median(),
+        'mean_rmsd': df['rmsd'].mean(),
+        'median_rmsd': df['rmsd'].median(),
+    })
+    return summary
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -142,3 +162,16 @@ if __name__ == "__main__":
         df = process(path, args.debug_max)
         pickle_path = os.path.join(args.output_folder, label + '.pkl.gz')
         df.to_pickle(pickle_path)
+        summary = summarize(df)
+        print(f"\nEvaluation summary for {label}:")
+        if summary.empty:
+            print("  No successful generations to evaluate.")
+        else:
+            # Format numeric values for readability
+            formatted = summary.to_dict()
+            formatted['valid_ratio'] = f"{formatted['valid_ratio']:.2%}"
+            formatted['match_rate'] = f"{formatted['match_rate']:.2%}"
+            for key in ('mean_rwp', 'median_rwp', 'mean_wd', 'median_wd', 'mean_rmsd', 'median_rmsd'):
+                formatted[key] = f"{summary[key]:.6f}"
+            print("  " + "\n  ".join(f"{k}: {v}" for k, v in formatted.items()))
+        print(f"  Saved detailed data to {pickle_path}")

@@ -122,7 +122,7 @@ def extract_prompt_batch(sequences, device, add_composition=True, add_spacegroup
 def load_model_from_checkpoint(ckpt_path, device):
     
     # Checkpoint
-    checkpoint = torch.load(ckpt_path, map_location=device)  # Load checkpoint
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)  # Load checkpoint
     state_dict = checkpoint.get("best_model_state", checkpoint.get("best_model"))
     
     model_args = checkpoint["model_args"]
@@ -405,6 +405,7 @@ def process_dataset(
     xrd_clean_dict: Optional[Dict] = None,
     max_new_tokens: int = 256,
     debug_max: Optional[int] = None,
+    max_samples: Optional[int] = None,
     debug: bool = False,
 ) -> Tuple[int, int]:
     """
@@ -428,6 +429,7 @@ def process_dataset(
         xrd_clean_dict (Optional[Dict]): XRD cleaning parameters. Defaults to None.
         max_new_tokens (int): Maximum number of tokens to generate. Defaults to 256.
         debug_max (Optional[int]): Debug mode limit for maximum samples to process. Defaults to None.
+        max_samples (Optional[int]): Maximum number of dataset samples to evaluate. Defaults to None.
         debug (bool): Enable debug mode. Defaults to False.
 
     Returns:
@@ -436,20 +438,31 @@ def process_dataset(
     # Load the dataset
     dataset = DeciferDataset(dataset_path, ["cif_name", "cif_tokens", "xrd.q", "xrd.iq", "cif_string", "spacegroup"])
     existing_eval_files = set(os.path.basename(f) for f in glob(os.path.join(eval_files_dir, "*.pkl.gz")))
-    num_generations = len(dataset) * num_repetitions - len(existing_eval_files) if debug_max is None else min(len(dataset) * num_repetitions, debug_max)
-    num_send = num_generations
-    pbar = tqdm(total=num_generations, desc='Generating and parsing evaluation tasks...', leave=True)
+    total_samples = len(dataset)
+
+    # Determine how many samples to evaluate
+    if max_samples is not None:
+        if max_samples < 0:
+            raise ValueError("max_samples must be non-negative.")
+        sample_limit = min(total_samples, max_samples)
+    else:
+        sample_limit = total_samples
+
+    if debug_max is not None:
+        sample_limit = min(sample_limit, debug_max)
+
+    pbar = tqdm(total=sample_limit, desc='Generating and parsing evaluation tasks...', leave=True)
     padding_id = Tokenizer().padding_id
+    num_tasks_enqueued = 0
 
     for i, data in enumerate(iter(dataset)):
-        if i >= num_generations:
+        if i >= sample_limit:
             break
 
         cif_name_sample = data['cif_name']
         cif_name_sample = cif_name_sample.split(".")[0]
         if not override and any(f.startswith(cif_name_sample) for f in existing_eval_files):
             pbar.update(1)
-            num_send -= 1
             continue
 
         prompt = None if model is None else extract_prompt(
@@ -469,7 +482,6 @@ def process_dataset(
             except:
                 print(f"Error in generating CIF for {cif_name_sample}")
                 pbar.update(1)
-                num_send -= 1
                 continue
             cif_token_gen = [ids[ids != padding_id] for ids in cif_token_gen]
         else:
@@ -498,13 +510,14 @@ def process_dataset(
                 'debug': debug,
             }
             input_queue.put(task)
+            num_tasks_enqueued += 1
         pbar.update(1)
 
     pbar.close()
     for _ in range(num_workers):
         input_queue.put(None)
 
-    return num_generations, num_send
+    return num_tasks_enqueued, num_tasks_enqueued
 
 def main():
     """
@@ -525,6 +538,7 @@ def main():
         --dataset-name (str): Name of the dataset for saving evaluation results.
         --model-name (str): Name of the model for saving evaluation results.
         --num-reps (int): Number of repetitions per sample for CIF generation.
+        --num-samples (int): Maximum number of dataset samples to evaluate.
 
     Returns:
         None: The function manages dataset processing, task distribution, and evaluation.
@@ -545,6 +559,7 @@ def main():
     parser.add_argument('--dataset-name', type=str, default='default_dataset', help='Name of the dataset.')
     parser.add_argument('--model-name', type=str, default='default_model', help='Name of the model.')
     parser.add_argument('--num-reps', type=int, default=1, help='Number of repetitions per sample.')
+    parser.add_argument('--num-samples', type=int, default=None, help='Maximum number of dataset samples to evaluate.')
     parser.add_argument('--override', action='store_true', help='Overrides the presence of existing files, effectively generating everything from scratch.')
     parser.add_argument('--condition', action='store_true', help='Flag to condition the generations on XRD.')
     parser.add_argument('--temperature', type=float, default=1.0, help='')
@@ -648,6 +663,7 @@ def main():
         xrd_clean_dict=clean_dict,
         temperature=args.temperature,
         top_k=args.top_k,
+        max_samples=args.num_samples,
     )
 
     if num_send > 0:

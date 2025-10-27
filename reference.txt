@@ -1,0 +1,2159 @@
+deCIFer: Crystal Structure Prediction from
+Powder Diffraction Data using
+Autoregressive Language Models
+Frederik Lizak Johansen⊥ , Ulrik Friis-Jensen† , Erik Bjørnager Dam⊥ ,
+Kirsten Marie Ørnsbjerg Jensen† , Rocío Mercado‡ , Raghavendra Selvan⊥
+⊥ Department of Computer Science, University of Copenhagen, Denmark
+† Department of Chemistry, University of Copenhagen, Denmark
+
+arXiv:2502.02189v3 [cs.LG] 27 Jun 2025
+
+‡ Department of Computer Science & Engineering, Chalmers University of Technology, Sweden
+{frjo,raghav}@di.ku.dk, kirsten@chem.ku.dk, rocio@ailab.bio
+
+Abstract
+Novel materials drive progress across applications from energy storage to electronics.
+Automated characterization of material structures with machine learning methods offers a
+promising strategy for accelerating this key step in material design. In this work, we introduce
+an autoregressive language model that performs crystal structure prediction (CSP) from powder
+diffraction data. The presented model, deCIFer, generates crystal structures in the widely
+used Crystallographic Information File (CIF) format and can be conditioned on powder X-ray
+diffraction (PXRD) data. Unlike earlier works that primarily rely on high-level descriptors like
+composition, deCIFer is also able to use diffraction data to perform CSP. We train deCIFer on
+nearly 2.3M crystal structures and validate on diverse sets of PXRD patterns for characterizing
+challenging inorganic crystal systems. Qualitative checks and quantitative assessments using
+the residual weighted profile show that deCIFer produces structures that more accurately
+match the target diffraction data. Notably, deCIFer can achieve a 94% match rate on test
+data. deCIFer bridges experimental diffraction data with computational CSP, lending itself as
+a powerful tool for crystal structure characterization. 1
+
+1
+
+Introduction
+
+Characterizing the atomic structure in functional materials is fundamental for understanding and
+optimizing materials for e.g. new energy technologies. Such characterization can be done using X-ray
+diffraction (XRD), and in particular, powder X-ray diffraction (PXRD) is widely used in materials
+chemistry and related fields as a main characterization tool (Cheetham and Goodwin, 2014). Several
+advances in machine learning (ML) have shown promise in aiding analysis of diffraction data over the
+last decade (Tatlier, 2011; Bunn et al., 2016; Oviedo et al., 2019; Wang et al., 2020), including recent
+advances in generative models for crystal structure prediction (CSP) (Jiao et al., 2023; Mohanty
+et al., 2024; Antunes et al., 2024). These conventional ML-aided CSP methods typically explore
+the structural phase space guided by high-level descriptors like material composition. Emerging
+experimental data informed CSP approaches have started to integrate diffraction data directly into
+the generative process (Kjær et al., 2023; Guo et al., 2024; Riesel et al., 2024; Lai et al., 2025).
+This shift represents a fundamental departure from conventional CSP.
+In this work, we present deCIFer (Figure 1a), a transformer-based model that performs CSP
+using the rich structural information explicitly represented in experimental data, such as PXRD
+patterns. Our autoregressive language model directly generates the Crystallographic Information
+Files (CIFs) – text files that encode for crystal structures. This approach can significantly advance
+the workflow used for atomic structure characterization based on PXRD methods. Furthermore, we
+mimic the noise in the PXRD as a result of experimental variations using various transformations
+to the PXRD patterns.
+The performance of deCIFer is evaluated on a diverse set of PXRD patterns, demonstrating its
+robustness to experimental noise and its ability to generate high-quality crystal structures. deCIFer
+is the first experimental data informed CSP model capable of generating syntactically correct and
+structurally meaningful CIFs that accurately reproduce reference PXRD patterns.
+1 Source code available at: https://github.com/FrederikLizakJohansen/deCIFer
+
+1
+
+(b) Example generations using deCIFer.
+
+(a) Overview of the deCIFer model.
+
+Figure 1: (a) Overview of the deCIFer model, which performs autoregressive crystal structure prediction
+(CSP) from PXRD data, optionally guided by tokenized crystal descriptors. PXRD embeddings are
+prepended to the CIF token sequence, enabling the generation of structurally consistent CIFs directly
+from diffraction data. (b) Three examples from the NOMA test set showing deCIFer generations, each
+illustrating a reference structure, the generated structure and their corresponding PXRD profiles.
+
+Our key contributions in this work are:
+1. Integration of experimental PXRD conditioning into an autoregressive transformer for CSP in
+CIF format; a capability not demonstrated in existing transformer-based generative models.
+2. Effective conditioning mechanism for autoregressive models with variable length input.
+3. Simulation of realistic experimental settings for PXRD with Gaussian noise and peak broadening.
+4. Comprehensive evaluation on two large-scale datasets: NOMA2 & CHILI-100K (Friis-Jensen
+et al., 2024), and comparison to state-of-the-art CSP generative models.
+
+2
+
+Background and Related Work
+
+PXRD: It is arguably the most accessible structural probe in solid-state chemistry. Modern
+benchtop diffractometers can collect a high-quality scan within minutes and are available in most
+research and industrial laboratories. A PXRD pattern contains diffraction peaks, whose position
+and intensity contain information on the periodic structure in crystalline materials, i.e. their atomic
+positions and structure symmetry. Crucially, the forward simulation of PXRD patterns from CIFs
+is grounded in well-established scattering theory (West, 2014), enabling realistic modelling.
+Most quantitative analysis of PXRD data is done using structure refinement, where the parameters in a structural model is refined against experimental data (Young, 1995). This requires a
+structural starting model of the correct structure type and symmetry. Identifying a model for such
+analysis is often referred to as fingerprinting, and can be a very challenging task, where chemical
+intuition as well as extensive database searches are required. Even then, model identification is not
+always successful, and this hinders further material development.
+CSP with LLMs: Transformer architecture (Vaswani et al., 2017) based large language models
+(LLMs) have seen emerging use in the automation of chemical syntheses (Hocky and White, 2022;
+Szymanski et al., 2023; M. Bran et al., 2024), data extraction (Gupta et al., 2022; Dagdelen et al.,
+2024; Polak and Morgan, 2024; Schilling-Wilhelmi et al., 2025), and materials simulation and
+property prediction (Zhang et al., 2024; Rubungo et al., 2024; Jablonka et al., 2024). However,
+they are not yet as widely used in tasks like materials design. ChemCrow (M. Bran et al., 2024),
+for instance, is an LLM-powered chemistry search engine designed to automate reasoning tasks in
+materials design and other domains.
+Recent works have used fine-tuning to adapt LLMs for CSP. Gruver et al. (2024) fine-tuned Llama2 models (Touvron et al., 2023) on text-encoded atomistic data, enabling tasks like unconditional
+generation of stable materials. Similarly, Mohanty et al. (2024) fine-tuned LLaMA-3.1-8B (Dubey
+et al., 2024) using QLoRA (Dettmers et al., 2024) for efficient CIF generation conditioned on
+material composition and space group. In contrast, the work on CrystaLLM (Antunes et al.,
+2 NOMA stands for NOMAD (Draxl and Scheffler, 2019) OQMD (Kirklin et al., 2015) & MP (Jain et al., 2013b)
+Aggregation.
+
+2
+
+2024) relies on pre-training alone to generate CIFs. It is trained on an extensive corpus of CIFs
+representing millions of inorganic compounds.
+CrystaLLM relies on composition- and symmetry- level crystal descriptors. Its utility, as most
+other CSP methods, is thus to generate structures without direct reference to experimental data.
+deCIFer, on the other hand, conditions on PXRD signals, produces structures agreeing with observed
+diffraction patterns and address the need for models that bridge predictive power with experimental
+reality.
+CSP with diffusion models: In parallel to LLM-based approaches, generative models using
+diffusion- or flow-based frameworks have also emerged for CSP (Jiao et al., 2023; Miller et al.,
+2024; Zeni et al., 2025; Xie et al., 2022). These methods rely on composition or partial structural
+constraints to guide generation, which requires domain knowledge and can limit direct incorporation
+of experimental data. While they show promise in producing stable crystal configurations, the gap
+between purely computational crystal structures and experimental data remains a challenge. The
+recent diffusion-based framework MatterGen (Zeni et al., 2025) addresses some of these challenges
+by enabling conditioning on a broad range of property constraints, and it can generate structures
+that are more likely to be synthesizable than previous methods; nevertheless, conditioning on PXRD
+has not been demonstrated in its current implementation, leaving room for further exploration in
+integrating experimental data more directly.
+
+3
+
+Methods
+
+Consider a crystal structure in CIF (text input) format that is tokenized into a sequence of length Ti :
+xi = (xi1 , xi2 , . . . , xiTi ) (see Appendix A.3 for details on tokenization). The corresponding scattering
+pattern, which in our case is the PXRD pattern denoted by yi , is a continuous-valued vector
+representing the intensity profile of the scattering pattern. The dataset then consists of pairs of
+CIFs and PXRD patterns, D = [(xi , yi )]N
+i=1 . Given this dataset, we want to minimize the negative
+conditional log-likelihood over the training data:
+!
+Ti
+N
+X
+1 X
+log PΘ (xit |xi<t , yi ) .
+(1)
+L(X|Y; Θ) =
+−
+N i=1
+t=1
+This is achieved using a conditional autoregressive model fΘ (·) with trainable parameters Θ based
+on the transformer architecture (Vaswani et al., 2017). Our autoregressive model, deCIFer, generates
+structures in CIF format when conditioned with an initial prompt and the PXRD data.
+PXRD Conditioning: The PXRD data can be seen as the structural fingerprint of the structures
+in CIFs. We use this PXRD data to steer the CSP by using it as a conditioning input to our model.
+Following the standard procedure in materials chemistry, for each CIF, we generate the discrete
+diffraction peak data, given as the set P = {(qk , ik )}nk=1 using pymatgen (Ong et al., 2013). During
+the model training, P is transformed into the PXRD data, y, using different simulated experimental
+conditions. Formally, let T be a set of transformations that can be applied to each P.
+The family of transformations used in this work are designed to closely mimic the experimental
+conditions. We define a distribution of transformations T such that each τ ∼ T comprises 1) a
+random peak broadening with full width at half maximum (FWHM) ∼ U(0.001, 0.100) and 2)
+2
+additive noise with variance σnoise
+∼ U(0.001, 0.050). Concretely, each τ is the composition of
+these two steps, and new values for broadening and noise are sampled on each draw, y = τ (P).
+Hence for each CIF, the PXRD pattern is transformed slightly differently every time it appears
+during training. Later for evaluation, we use τfixed with manually specified parameters to test
+2
+the robustness of the models. The clean transformation τ0 fixes FWHM = 0.05 and σnoise
+= 0.
+Examples from T on a PXRD are shown in Figure 9 (in Appendix).
+Conditioning Model: A multi-layered perceptron (MLP) fΦ (y) with trainable parameters
+Φ is used to embed the PXRD data into a learnt vector e = fΦ (y) ∈ RD . This embedding is
+inserted at the start of the tokenized CIF sequence as a conditioning signal. Joint training of the
+conditioning network, fΦ , and the autoregressive model, fΘ , enables the integration of structural
+information from the PXRD profiles during the generation of CIFs. This joint training along with
+transformations to the PXRD data results in the final training objective L(X|Y; Θ, Φ).
+
+3
+
+Sequence Packing and Isolating CIFs: To effectively train on variable-length CIF sequences, we
+implement a batching strategy during training, inspired by recent sequence-packing methods that prevent cross-contamination and improve throughput (Kosec et al., 2021). Our approach concatenates
+multiple tokenized CIF sequences, each of length Ti (excluding the conditioning embedding) into
+segments of fixed context length, C. Formally, consider a sequence S = [e1 , t11 , . . . , t1T1 , e2 , t21 , . . . , tnk ],
+where n is the last fully or partially included CIF. In this notation ei denotes a D-dimensional
+conditioning embedding for the i-th CIF, while tij is the D-dimensional input embedding for xij ,
+the j-th token of the i-th CIF. We choose k such that |S| = C. If adding another CIF exceeds
+C, that CIF is split at the boundary and continued in the next segment. In practice, we set
+C = 3076 based on the available GPU memory to balance throughput and memory constraints,
+which exceeds the length of the longest tokenized CIFs in the NOMA dataset. Although our method
+guarantees efficient batch utilization, it does occasionally split exceptionally long CIFs between
+batches (≈ 0.04% of samples in the NOMA dataset; see Figure 10 in the Appendix). To mitigate
+this, we shuffle the training set at the start of each epoch so that previously split CIFs are more
+likely to appear in full in subsequent mini-batches, allowing the model to learn from complete
+sequences.
+To isolate different CIFs in the same sequence, we employ an attention mask M, defined such
+that Mkl = 1 iff tokens k and l belong to the same CIF, and Mkl = 0 otherwise. This results in
+a block-wise diagonal, upper-triangular, attention matrix as shown in Figure 8 (Appendix). To
+prevent positional information from leaking across CIF boundaries we also reset positional encodings
+at the start of each CIF by assigning positions from 0 to Ti − 1 for the i-th sequence.
+
+4
+
+Dataset and Experiments
+
+Dataset: We use two large-scale public datasets here. The first, NOMA, is a large-scale compilation of crystal structures curated in CrystaLLM (Antunes et al., 2024), which draws from
+the Materials Project (April 2022) (Jain et al., 2013b), OQMD (v. 1.5, October 2023) (Kirklin
+et al., 2015), and NOMAD (April 2023) (Draxl and Scheffler, 2019) databases. The second,
+CHILI-100K (Friis-Jensen et al., 2024), is a large-scale dataset of experimentally determined crystal
+structures obtained from a curated subset of the Crystallography Open Database (COD) (Gražulis
+et al., 2009). We employ NOMA for both training and testing our models, whereas CHILI-100K is
+used exclusively for testing. Both datasets are open-source and available for download.3
+Preprocessing: We perform standard data preprocessing steps outlined in CrystaLLM before
+performing additional curation to address complexities such as ionic charges and to ensure consistent
+structural representation between NOMA and CHILI-100K. The resulting NOMA dataset comprises
+approximately 2.3M CIFs, spanning 1–10 elements, including elements up to atomic number 94
+(excluding polonium, astatine, radon, francium, and radium). Duplicate structures were filtered by
+selecting the configuration with the lowest volume per formula unit. All structures were converted
+to a standardized CIF format using the pymatgen library (Ong et al., 2013) and all floating point
+values were rounded to four decimal places. The resulting CHILI-100K dataset consists of ≈ 8.2K
+CIFs, spanning 1–8 elements, including elements up to atomic number 85. Figures 10 and 11 (in
+Appendix) show the distribution of elemental compositions, space groups, and more attributes for
+the two datasets.
+Additionaly, a known challenge in datasets like NOMA is the disproportionate representation of
+high-symmetry structures, which can skew model learning and evaluation (Davariashtiyani et al.,
+2024; Zhang et al., 2023). To mitigate this, we stratify the dataset during the train/validation/test
+split based on space group labels. For details on stratification, see Section A.9.
+Finally, CIFs from both datasets were tokenized into a vocabulary of 373 tokens, encompassing
+CIF tags, space group symbols, element symbols, numeric digits, punctuation marks, padding
+tokens and a special conditioning token. For a detailed explanation of the standardization and
+tokenization processes, refer to Section A.2 and A.3 in the Appendix.
+Model Hyperparameters: deCIFer has two learnable components, fΦ and fΘ . The encoder
+fΦ is a 2-layer MLP that takes a PXRD profile of dimension 1000 and outputs a 512-dimensional
+embedding. This embedding is prepended as the conditioning-token to the sequence of CIF tokens,
+where each CIF token is also of D = 512 dimensions. fΘ is a decoder-only transformer (Vaswani
+3 NOMA: github.com/lantunes/CrystaLLM (CC-BY 4.0 licence), CHILI-100K: github.com/UlrikFriisJensen/
+CHILI (Apache 2.0 licence).
+
+4
+
+et al., 2017) with 8 layers, each containing 8 attention heads. We use a context length of 3076 and a
+batch size of 32. A linear warm-up of the learning rate is applied over the first 100 epochs, followed
+by a cosine decay schedule using AdamW (Loshchilov and Hutter, 2017) (β1 = 0.9, β2 = 0.95, weight
+decay 10−1 ) for 50K epochs with gradient accumulation of 40 steps on a single NVIDIA A100
+GPU with mixed-precision acceleration. All aspects of the model architecture were implemented in
+Pytorch (Paszke et al., 2019). fΦ has ≈ 0.78M trainable parameters and fΘ contains ≈ 26.94M,
+resulting in a deCIFer model with 27.72M parameters. The code is open-source and additional
+details can be found in Section A.9 in the Appendix.
+Evaluation: Figure 2 summarizes the evaluation pipeline which shows how a reference CIF from
+the test set is used to generate discrete peaks, P = {(qk , ik )}nk=1 , which are transformed into a
+PXRD profile y = τfixed (P), where τfixed is selected according to the desired experimental setting.
+The resulting PXRD, along with any optional crystal descriptors, is tokenized and passed to deCIFer
+to produce a new CIF (CIF∗ ). For evaluation, the generated structures are compared using three
+common metrics. Here a clean reference transformation τ0 (FWHM= 0.05, σnoise2 = 0) is used.
+1) Residual weighted profile (Rwp ) is
+applied to convolved continuous PXRD profiles,
+measuring the discrepancy between a reference
+PXRD profile, y, and a q
+generated
+PXRD profile,
+P
+w (y −y ∗ )2
+
+i
+i Pi
+i
+y∗ . Formally: Rwp =
+with all
+2
+i wi yi
+weights wi = 1 here, following convention.
+2) Match rate (MR) uses StructureMatcher (Ong
+et al., 2013) to assess structural similarity between reference and generated CIFs. Two structures are considered a match if their lattice pa- Figure 2: Evaluation pipeline: A test set CIF generrameters, atomic coordinates, and space group ates a PXRD profile, tokenized for deCIFer to produce
+symmetries are within the defined tolerances. a new CIF, compared to the reference using a clean
+MR is the fraction of matching structures. See transformation.
+Section A.7 in the Appendix for more information.
+3) Validity (Val.) ensures the internal consistency of each generated CIF by checking formula
+consistency, site multiplicity, bond lengths, and space group alignment. A CIF is deemed overall
+valid only if it passes all four checks. Detailed explanations of these metrics are provided in
+Section A.6 in the Appendix.
+
+Experiments: We conducted a series of experiments to evaluate deCIFer’s ability to perform
+CSP when conditioned on PXRD profiles, space group, and composition. First, we compare against
+three recent state-of-the-art CSP models. Next, we compare the baseline performance of deCIFer
+against an unconditioned variant (U-deCIFer) to assess the direct impact of PXRD conditioning
+on the generated structures. Next, we introduce controlled noise and peak broadening into the
+input PXRD data, examining deCIFer’s robustness under more challenging scenarios resembling
+real-world PXRD data. Finally, we apply deCIFer (trained on NOMA) to CHILI-100K (Friis-Jensen
+et al., 2024) to demonstrate its scalability and performance on more complex crystal systems. In
+these experiments, we generate one CIF for each reference sample in the test sets. For consistent
+evaluation, each reference CIF is also processed through the fixed, clean transformation τ0 (FWHM
+2
+= 0.05, σnoise
+= 0).
+For some experiments we allow space group and composition to be specified as crystal descriptors.
+Since CIFs inherently encode space group and composition as text, we treat these descriptors as
+standard tokens in our vocabulary (see Section A.3 in the Appendix). The space group appears in
+the CIF header, while composition is stored as element–count pairs. During inference, these tokens
+are optionally inserted into the CIF.
+
+5
+
+Results
+
+Baseline Comparisons with State-of-the-art: To evaluate the structure generation quality of
+deCIFer, we compare against three recent state-of-the-art CSP models: CDVAE (Xie et al., 2022),
+DiffCSP (Jiao et al., 2023), and CrystaLLM (Antunes et al., 2024). Following the single-sample
+evaluation setup used in prior work (Antunes et al., 2024), we generate one structure per composition
+and assess accuracy using two metrics: match rate and root-mean-square error (RMSE) in atomic
+
+5
+
+none
+
+0.0
+
+comp.
+
+1.0
+
+Rwp
+
+comp.+s.g.
+
+2.0
+
+Desc.
+
+Model
+
+Rwp (µ ± σ) ↓
+
+Val. (%) ↑
+
+MR (%) ↑
+
+none
+
+U-deCIFer
+deCIFer
+
+1.24 ±0.26
+0.32 ±0.34
+
+93.49
+92.66
+
+0.00
+5.01
+
+comp.
+
+U-deCIFer
+deCIFer
+
+0.82 ±0.41
+0.25 ±0.29
+
+93.78
+93.73
+
+49.30
+91.50
+
+comp.+s.g.
+
+U-deCIFer
+deCIFer
+
+0.65 ±0.36
+0.24 ±0.29
+
+93.72
+93.90
+
+87.07
+94.53
+
+3.0
+
+Figure 3: Left: Distribution of Rwp for deCIFer and U-deCIFer on the NOMA test set with boxplots. Lower
+Rwp indicates better CIF alignment. Right: Performance for 20K NOMA test samples using deCIFer and
+U-deCIFer with different descriptors: none (no descriptors), comp. (composition), and comp.+ s.g.
+(composition + space group). Metrics include validity (Val.) and match rate (MR).
+
+positions (Å). To ensure a fair and consistent evaluation, we adopt the official train-test splits
+provided by DiffCSP (Jiao et al., 2023) for all four benchmark datasets: Perov-5 (Castelli et al.,
+2012a;b), Carbon-24 (Pickard, 2020), MP-20 (Jain et al., 2013a), and MPTS-52 (Baird, 2023).
+As shown in Table 1, deCIFer outperforms all baselines on Perov-5 and Carbon-24, highlighting
+the benefit of PXRD conditioning when the diffraction data are informative. However, on MP-20
+and MPTS-52, CrystaLLM-large outperforms deCIFer, likely due to its exclusive emphasis on
+composition-structure mappings, which align closely with the test set. This highlights a key trade-off
+in experimental data informed CSP: while conditioning can enhance structure generation in complex
+cases, it can also introduce ambiguity when the PXRD signal is weak or the model’s training priors
+are strong.
+Table 1: Performance comparison on four public CSP benchmarks: Perov-5 (Castelli et al., 2012a;b),
+Carbon-24 (Pickard, 2020), MP-20 (Jain et al., 2013a), and MPTS-52 (Baird, 2023). Following the singlesample evaluation protocol used in prior work (Antunes et al., 2024), one structure is generated per test
+composition. We report the match rate (%) based on structural equivalence under StructureMatcher and
+the atomic root-mean-square error (RMSE in Å) after alignment.
+Perov-5
+Model
+
+Carbon-24
+
+MP-20
+
+MPTS-52
+
+Match (%)↑
+
+RMSE↓
+
+Match (%)↑
+
+RMSE↓
+
+Match (%)↑
+
+RMSE↓
+
+Match (%)↑
+
+RMSE↓
+
+CDVAE
+DiffCSP
+CrystaLLM-small
+CrystaLLM-large
+U-deCIFer
+
+45.31
+52.02
+47.95
+46.10
+50.55
+
+0.1138
+0.0760
+0.0966
+0.0953
+0.1177
+
+17.09
+17.54
+21.13
+20.25
+17.33
+
+0.2969
+0.2759
+0.1687
+0.1761
+0.1526
+
+33.90
+51.49
+55.85
+58.70
+44.99
+
+0.1045
+0.0631
+0.0437
+0.0408
+0.0784
+
+5.34
+12.19
+17.47
+19.21
+11.80
+
+0.2106
+0.1786
+0.1113
+0.1110
+0.1563
+
+deCIFer
+
+85.29
+
+0.0491
+
+37.16
+
+0.1970
+
+43.51
+
+0.0763
+
+11.44
+
+0.1346
+
+Importance of PXRD Conditioning: We compare deCIFer and U-deCIFer to study the effect
+of PXRD conditioning. We evaluate each model in three settings: without any crystal descriptors
+(“none”), with only compositional information (“comp.”), and with both compositional and space
+group information (“comp. + s.g.”). Both models share the same architectural backbone, but
+deCIFer receives structural guidance via the PXRD conditioning.
+Figure 3 shows that deCIFer achieves lower average Rwp than U-deCIFer across all descriptor
+settings. Figure 3 visualizes the distributions of Rwp for both models, highlighting the large
+performance improvement due to PXRD conditioning, and a smaller but still notable improvement
+due to composition conditioning. Figure 4 shows that structures of more common crystal systems
+lead to better outcomes, while under-represented, lower symmetry crystal systems remain challenging.
+The figure further illustrates the effectiveness of PXRD conditioning with three examples from
+the NOMA test set, showcasing the range of generated structures, from near-perfect alignment to
+structural mismatch. While U-deCIFer benefits from the addition of crystal descriptors, it never
+reaches the accuracy of deCIFer. Overall, these results demonstrate that conditioning on PXRD
+data and crystal descriptors substantially enhances the model’s ability to generate CIFs with close
+alignment to desired PXRD profiles.
+
+6
+
+Lower Symmetry
+
+none
+
+comp.
+
+comp.+s.g.
+6072
+6076
+6078
+
+Cubic
+806
+811
+813
+1679
+1688
+1691
+
+Hexagonal
+Trigonal
+Tetragonal
+Orthorhombic
+Monoclinic
+
+134
+129
+128
+
+Triclinic
+0.0
+
+0.5
+
+Rwp
+
+1.0 0
+
+3833
+3841
+3843
+4559
+4567
+4566
+2835
+2839
+2847
+
+5000
+
+Count
+
+Figure 4: Left: Average Rwp by crystal system for deCIFer on the NOMA test set shows better performance
+for common high symmetry systems and higher Rwp for rare low symmetry systems. Right: Examples from
+the NOMA test set highlight this trend with predicted structures from PXRD and composition maintaining
+reasonable matches even for low symmetry systems with higher Rwp .
+
+Robustness to Perturbations in PXRD Conditioning We evaluated deCIFer’s ability to
+generate accurate CIFs under varying levels of additive noise and peak broadening in the PXRD
+conditioning input, while also providing the composition as a crystal descriptor. Building upon
+the baseline scenario of clean, noise-free PXRD data, we tested several increasingly challenging
+conditions: maximum noise, maximum peak broadening, combined noise and broadening, and
+out-of-distribution (OOD) broadening levels beyond the model’s training range.
+Figure 5 (and Figure 16 in Appendix) show that while additive noise results in slight performance
+degradation, the model remains robust to in-distribution noise and peak broadening. We also
+observe moderate performance degradation with OOD broadening or significantly higher noise
+levels. Unsurprisingly, we observe that lower-symmetry crystal systems remain more challenging to
+predict under perturbed conditions across all crystal systems. This is depicted in Figure 14 in the
+Appendix.
+OOD Evaluation on CHILI-100K To evaluate the generalization of deCIFer to more complex
+crystal systems, we tested its performance on the CHILI-100K dataset (Friis-Jensen et al., 2024)
+which had no overlap with the NOMA training data for deCIFer. Unlike synthetic datasets, CHILI100K presents a closer approximation to real-world challenges, including complex structural motifs
+and a broader distribution of crystal symmetries. Additionally, CHILI-100K contains a significantly
+higher proportion of lower-symmetry structures compared to synthetic datasets like NOMA (see
+the sample distribution in Appendix Figure 15).
+The results on CHILI-100k dataset are summarized in Figure 5. deCIFer maintains a reasonable
+level of structural accuracy on this challenging dataset. The relatively low validity score is partly
+due to challenges with bond length validity, which was notably lower than the other validity metrics.
+A full breakdown of the validity metrics for this experiment is available in Section A.6 in the
+Appendix.
+Despite the performance drop, deCIFer demonstrated robustness to added noise and peak
+broadening in PXRD inputs, with stable Rwp values across perturbed conditions as seen in Figure 5.
+This stability, along with its ability to generate a variety of structural features, suggests that
+deCIFer could be useful for practical applications involving experimentally derived PXRD data.
+To assess the impact of PXRD conditioning on OOD Table 2: Performance on CHILI-100K without
+data, we compare deCIFer with U-deCIFer on the (U-deCIFer) and with (deCIFer) PXRD condiCHILI-100K test set. Results are shown in Table 2. tioning.
+We observe that PXRD conditioning lowers Rwp and
+Model
+Rwp ↓
+Val. (%)↑
+MR (%)↑
+has a significant positive effect on the match rate,
+U-deCIFer
+0.96 ± 0.32
+43.26
+25.92
+showcasing that the conditioning drives improvement
+deCIFer
+0.70 ± 0.37
+41.83
+37.34
+and not merely compositional priors.
+
+6
+
+Discussion and Outlook
+
+PXRD-driven Structure Generation: The experiments on NOMA and CHILI-100K in Section 5
+clearly show the utility of including conditioning data such as PXRD when performing CSP. deCIFer
+7
+
+ID: (0.00, 0.05)
+
+ID: (0.05, 0.10)
+
+OOD: (0.10, 0.20)
+0.0
+
+Dataset
+
+2
+(σnoise
+, FWHM)
+
+NOMA
+
+ID: (0.00, 0.05)
+ID: (0.05, 0.10)
+
+CHILI-100K
+1.0
+
+Rwp
+
+2.0
+
+Rwp (µ ± σ) ↓ Val. (%) ↑ MR (%) ↑
+0.25±0.29
+0.31±0.30
+
+93.73
+93.77
+
+91.50
+89.28
+
+OOD: (0.10, 0.20)
+
+0.65±0.34
+
+91.66
+
+77.66
+
+ID: (0.00, 0.05)
+ID: (0.05, 0.10)
+
+0.70±0.37
+0.73±0.36
+
+41.83
+40.95
+
+37.34
+35.97
+
+OOD: (0.10, 0.20)
+
+0.87±0.33
+
+33.62
+
+26.09
+
+3.0
+
+Figure 5: Left: Distribution of Rwp for deCIFer on NOMA and CHILI-100K using PXRD conditioning and
+composition (comp.) across three scenarios: clean, high noise/broadening, and out-of-distribution (OOD),
+with noise and FWHM values indicated. Right: Corresponding table of performance metrics, including
+Rwp , overall validity (Val.), and match rate (MR) for each scenario.
+
+consistently achieves strong performance on the NOMA test set, where the diversity of crystal
+systems and the availability of high-quality PXRD signals allow the model to accurately generate
+structures that align with the diffraction data. This highlights a key advantage of PXRD conditioning:
+when the diffraction data are clear and informative, deCIFer can use them to resolve complex
+atomic arrangements, even in cases where composition-only models struggle.
+However, the results also make it clear that deCIFer, like any PXRD-conditioned model, cannot
+be used as a black-box end-to-end solver. The model’s ability to generate accurate structures is
+tied to the quality and relevance of the PXRD signal. On datasets like MP-20, where learned
+composition–structure priors dominate, PXRD conditioning can sometimes interfere with accurate
+generation by introducing conflicting guidance. This tension between learned priors and PXRD
+conditioning is not unique to deCIFer but reflects a broader challenge in PXRD-informed CSP.
+By embedding the PXRD data, y, into a learnable conditional embedding, e = fΦ (y), and
+prepending it onto prompts for deCIFer, we have demonstrated a general paradigm for integrating
+additional conditional data in materials design, an idea which can be extended to the incorporation
+of other material properties. In cases where multiple experimental data sources are available, they
+can be easily injected into the generative process using specific conditioning models. That is, if P
+properties are available such that y = {y1 , . . . , yP }, then deCIFer can be extended to incorporate
+these additional data using additional conditioning models, fΦ1 , . . . , fΦP , that can be jointly trained
+with the generative model, fΘ , via a training objective of the form L(X|Y1 , . . . , YP ; Θ, Φ1 , . . . , ΦP ).
+Consistency in CIF generation: To further investigate the consistency and variability of
+deCIFer, we generated 16K CIFs for the same PXRD profile with different crystal descriptors
+(“none”, “comp.”, and “comp+s.g.”). Figure 6 illustrates our findings for a challenging monoclinic
+crystal system of Sr2 Cd2 Se4 from the NOMA test set. When unconstrained by crystal descriptors,
+the model generates a wide diversity of cell-parameters, compositions, and space groups, yet the
+Rwp values tend to cluster in a relatively narrow range. In contrast, imposing compositional and,
+especially, space group constraints yields much tighter cell-parameter distributions and a broader
+Rwp distribution. The broader distributions highlight how the Rwp metric is highly sensitive to
+even small structural deviations and shows the importance of complementing with other validation
+methods. Despite these variations, the overall structural match rate to the reference CIF remains
+high. If the composition or space group is known with high confidence, incorporating these
+constraints can speed up convergence to a more accurate structural solution. Conversely, if the
+objective is to explore the material landscape more broadly, unconstrained generation with PXRD
+can be advantageous.
+Limitations: In materials science, the concept of data leakage is nuanced due to the challenges
+in defining novelty and diversity, as emphasized in recent discussions on scaling AI for materials
+discovery (Cheetham and Seshadri, 2024). Although we stratify the NOMA dataset by space group
+bins and use CHILI-100K exclusively for testing, there remains the possibility of implicit overlaps,
+such as structurally similar crystal entries or shared compositional biases.
+Furthermore, the vast size and diversity of the NOMA dataset as well as the thorough preprocessing steps (e.g., de-duplication, filtering, and standardization), coupled with the independent
+curation of CHILI-100K, significantly mitigate the impact of any potential overlaps.
+While PXRD conditioning enhances structure prediction by introducing rich physical constraints,
+it also inherits a well-known limitation: the inability to distinguish between homometric structures.
+These are distinct atomic arrangements that yield indistinguishable diffraction patterns (Patterson,
+1944). This ambiguity has been documented in real structural analyses (Schneider et al., 2010).
+Because metrics such as Rwp operate only on the diffraction pattern, they cannot capture homometric
+8
+
+Figure 6: deCIFer-sampled structures for a monoclinic Sr2 Cd2 Se4 PXRD profile (16K samples). a) Reference
+structure. b) Distribution of Rwp for generated CIFs. c) Examples of generated structures showing best,
+median, and diverse samples. d) Distribution of sampled crystal systems. e) Histograms of cell lengths (a,
+b, c) and angles (α, β, γ) with reference values as dotted lines.
+
+degeneracy. Nevertheless, several strategies can help mitigate this limitation (Shen et al., 2022).
+Particularly, our experiments with deCIFer show that even partial inclusion of complementary
+information, such as composition, can mitigate near-degeneracy cases where the only differences in
+the PXRD are subtle variations in relative peak intensities.
+
+7
+
+Conclusion
+
+In this work, we introduced deCIFer as a data-informed approach to CSP. deCIFer is an autoregressive
+transformer-based language model that generates CIFs directly from PXRD data developed using
+lab-scale compute resources with a single GPU. By conditioning on simulated PXRD profiles,
+deCIFer captures fine-grained structural information beyond what is possible with compositionor symmetry-based information alone. Evaluations on large synthetic and experimentally derived
+datasets highlight deCIFer’s robust performance in scenarios with varying levels of noise and peak
+broadening.
+Ultimately, deCIFer represents a step forward in PXRD-informed CSP, bridging the gap between
+purely composition-based generative models and structure generation directly guided by experimental
+data. It is most useful when the diffraction signal is informative and when combined with careful
+downstream verification. For real-world use, this balance must be clearly understood, and model
+predictions must be treated as high-quality starting points rather than definitive solutions.
+Acknowledgments
+The authors thank Richard Michael and Adam F. Sapnik for useful feedback.
+This work is part of a project that has received funding from the European Research Council
+(ERC) under the European Union’s Horizon 2020 Research and Innovation Programme (grant
+agreement No. 804066). We are grateful for funding from University of Copenhagen through the
+Data+ program. RM acknowledges funding provided by the Wallenberg AI, Autonomous Systems,
+and Software Program (WASP), supported by the Knut and Alice Wallenberg Foundation.
+
+References
+L. M. Antunes, K. T. Butler, and R. Grau-Crespo. Crystal structure generation with autoregressive
+large language modeling. Nature Communications, 15(1):10570, 2024. ISSN 2041-1723. doi:
+10.1038/s41467-024-54639-7.
+S. Baird. mp-time-split. accessed in 2024. https://github.com/sparks-baird/mp-time-split,
+2023.
+J. K. Bunn, J. Hu, and J. R. Hattrick-Simpers. Semi-supervised approach to phase identification
+from combinatorial sample diffraction patterns. JOM, 68(8):2116–2125, Aug 2016. ISSN 1543-1851.
+doi: 10.1007/s11837-016-2033-8.
+
+9
+
+I. E. Castelli, D. D. Landis, K. S. Thygesen, S. Dahl, I. Chorkendorff, T. F. Jaramillo, and K. W.
+Jacobsen. New cubic perovskites for one- and two-photon water splitting using the computational
+materials repository. Energy Environ. Sci., 5:9034–9043, 2012a. doi: 10.1039/C2EE22341D.
+I. E. Castelli, T. Olsen, S. Datta, D. D. Landis, S. Dahl, K. S. Thygesen, and K. W. Jacobsen.
+Computational screening of perovskite metal oxides for optimal solar light capture. Energy
+Environ. Sci., 5:5814–5819, 2012b. doi: 10.1039/C1EE02717D.
+A. K. Cheetham and A. L. Goodwin. Crystallography with powders. Nature Materials, 13(8):
+760–762, Aug 2014.
+A. K. Cheetham and R. Seshadri. Artificial intelligence driving materials discovery? perspective
+on the article: Scaling deep learning for materials discovery. Chemistry of Materials, 36(8):
+3490–3495, 2024. doi: 10.1021/acs.chemmater.4c00643.
+J. Dagdelen, A. Dunn, S. Lee, N. Walker, A. S. Rosen, G. Ceder, K. A. Persson, and A. Jain.
+Structured information extraction from scientific text with large language models. Nature
+Communications, 15(1):1418, 2024.
+A. Davariashtiyani, B. Wang, S. Hajinazar, E. Zurek, and S. Kadkhodaei. Impact of data bias on
+machine learning for crystal compound synthesizability predictions. Machine Learning: Science
+and Technology, 5(4):040501, nov 2024. doi: 10.1088/2632-2153/ad9378.
+T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer. Qlora: Efficient finetuning of quantized
+llms. Advances in Neural Information Processing Systems, 36, 2024.
+C. Draxl and M. Scheffler. The nomad laboratory: From data sharing to artificial intelligence.
+Journal of Physics: Materials, 2, 05 2019. doi: 10.1088/2515-7639/ab13bb.
+A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten,
+A. Yang, A. Fan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.
+U. Friis-Jensen, F. L. Johansen, A. S. Anker, E. B. Dam, K. M. O. Jensen, and R. Selvan. Chili:
+Chemically-informed large-scale inorganic nanomaterials dataset for advancing graph machine
+learning. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining, KDD ’24, page 4962–4973, New York, NY, USA, 2024. Association for Computing
+Machinery. ISBN 9798400704901. doi: 10.1145/3637528.3671538.
+E. Gazzarrini, R. K. Cersonsky, M. Bercx, C. S. Adorf, and N. Marzari. The rule of four: anomalous
+distributions in the stoichiometries of inorganic compounds. npj Computational Materials, 10(1):
+73, Apr 2024. ISSN 2057-3960. doi: 10.1038/s41524-024-01248-z.
+S. Gražulis, D. Chateigner, R. T. Downs, A. F. T. Yokochi, M. Quirós, L. Lutterotti, E. Manakova,
+J. Butkus, P. Moeck, and A. Le Bail. Crystallography Open Database – an open-access collection
+of crystal structures. Journal of Applied Crystallography, 42(4):726–729, Aug 2009. doi: 10.1107/
+S0021889809016690.
+N. Gruver, A. Sriram, A. Madotto, A. G. Wilson, C. L. Zitnick, and Z. W. Ulissi. Fine-tuned
+language models generate stable inorganic materials as text. In The Twelfth International
+Conference on Learning Representations (ICLR), 2024.
+G. Guo, T. Saidi, M. Terban, M. Valsecchi, S. J. Billinge, and H. Lipson. Ab initio structure
+solutions from nanocrystalline powder diffraction data, 2024.
+T. Gupta, M. Zaki, N. A. Krishnan, and Mausam. Matscibert: A materials domain language model
+for text mining and information extraction. npj Computational Materials, 8(1):102, 2022.
+G. M. Hocky and A. D. White. Natural language processing models that automate programming
+will transform chemistry research and teaching. Digital discovery, 1(2):79–83, 2022.
+K. M. Jablonka, P. Schwaller, A. Ortega-Guerrero, and B. Smit. Leveraging large language models
+for predictive chemistry. Nature Machine Intelligence, 6(2):161–169, 2024.
+A. Jain, S. P. Ong, G. Hautier, W. Chen, W. D. Richards, S. Dacek, S. Cholia, D. Gunter, D. Skinner,
+G. Ceder, and K. A. Persson. Commentary: The materials project: A materials genome approach
+to accelerating materials innovation. APL Materials, 1(1):011002, 07 2013a. ISSN 2166-532X.
+doi: 10.1063/1.4812323.
+10
+
+A. Jain, S. P. Ong, G. Hautier, W. Chen, W. D. Richards, S. Dacek, S. Cholia, D. Gunter, D. Skinner,
+G. Ceder, and K. A. Persson. Commentary: The materials project: A materials genome approach
+to accelerating materials innovation. APL Materials, 1(1):011002, 07 2013b. ISSN 2166-532X.
+doi: 10.1063/1.4812323.
+R. Jiao, W. Huang, P. Lin, J. Han, P. Chen, Y. Lu, and Y. Liu. Crystal structure prediction by
+joint equivariant diffusion. Advances in Neural Information Processing Systems, 36:17464–17497,
+2023.
+S. Kirklin, J. E. Saal, B. Meredig, A. Thompson, J. W. Doak, M. Aykol, S. Rühl, and C. Wolverton.
+The open quantum materials database (oqmd): assessing the accuracy of dft formation energies.
+npj Computational Materials, 1(1):1–15, 2015.
+E. T. S. Kjær, A. S. Anker, M. N. Weng, S. J. L. Billinge, R. Selvan, and K. M. Ø. Jensen.
+Deepstruc: towards structure solution from pair distribution function data using deep generative
+models. Digital Discovery, 2:69–80, 2023. doi: 10.1039/D2DD00086E.
+M. Kosec, S. Fu, and M. M. Krell. Packing: Towards 2x NLP BERT acceleration. CoRR,
+abs/2107.02027, 2021.
+Q. Lai, F. Xu, L. Yao, Z. Gao, S. Liu, H. Wang, S. Lu, D. He, L. Wang, L. Zhang, C. Wang, and
+G. Ke. End-to-end crystal structure prediction from powder x-ray diffraction. Advanced Science,
+page 2410722, 2025.
+I. Loshchilov and F. Hutter. Fixing weight decay regularization in adam. CoRR, abs/1711.05101,
+2017.
+A. M. Bran, S. Cox, O. Schilter, C. Baldassari, A. D. White, and P. Schwaller. Augmenting large
+language models with chemistry tools. Nature Machine Intelligence, pages 1–11, 2024.
+B. K. Miller, R. T. Chen, A. Sriram, and B. M. Wood. Flowmm: Generating materials with
+riemannian flow matching. In Forty-first International Conference on Machine Learning, 2024.
+T. Mohanty, M. Mehta, H. M. Sayeed, V. Srikumar, and T. D. Sparks. Crystext: A generative
+ai approach for text-conditioned crystal structure generation using llm. ChemRxiv, 2024. doi:
+10.26434/chemrxiv-2024-gjhpq. This content is a preprint and has not been peer-reviewed.
+K. Momma and F. Izumi. VESTA: a three-dimensional visualization system for electronic and
+structural analysis. Journal of Applied Crystallography, 41(3):653–658, Jun 2008. doi: 10.1107/
+S0021889808012016.
+S. P. Ong, W. D. Richards, A. Jain, G. Hautier, M. Kocher, S. Cholia, D. Gunter, V. Chevrier,
+K. A. Persson, and G. Ceder. Python materials genomics (pymatgen): A robust, open-source
+python library for materials analysis. Computational Materials Science, 68:314–319, 2013. doi:
+10.1016/j.commatsci.2012.10.028.
+F. Oviedo, Z. Ren, S. Sun, C. Settens, Z. Liu, N. T. P. Hartono, S. Ramasamy, B. L. DeCost,
+S. I. P. Tian, G. Romano, A. Gilad Kusne, and T. Buonassisi. Fast and interpretable classification
+of small x-ray diffraction datasets using data augmentation and deep neural networks. npj
+Computational Materials, 5(1):60, May 2019. ISSN 2057-3960. doi: 10.1038/s41524-019-0196-x.
+R. Palgrave. An explanation for the rule of four in inorganic materials, 2024. Preprint, not
+peer-reviewed.
+A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N. Gimelshein,
+L. Antiga, A. Desmaison, A. Kopf, E. Yang, Z. DeVito, M. Raison, A. Tejani, S. Chilamkurthy,
+B. Steiner, L. Fang, J. Bai, and S. Chintala. Pytorch: An imperative style, high-performance
+deep learning library. In H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc, E. Fox, and
+R. Garnett, editors, Advances in Neural Information Processing Systems, volume 32. Curran
+Associates, Inc., 2019.
+A. L. Patterson. Ambiguities in the x-ray analysis of crystal structures. Phys. Rev., 65:195–201,
+Mar 1944. doi: 10.1103/PhysRev.65.195.
+C. J. Pickard. AIRSS Data for Carbon at 10GPa and the C+N+H+O System at 1GPa. https:
+//archive.materialscloud.org/record/2020.0026/v1, 2020.
+11
+
+M. P. Polak and D. Morgan. Extracting accurate materials data from research papers with
+conversational language models and prompt engineering. Nature Communications, 15(1):1569,
+2024.
+E. A. Riesel, T. Mackey, H. Nilforoshan, M. Xu, C. K. Badding, A. B. Altman, J. Leskovec, and D. E.
+Freedman. Crystal structure determination from powder diffraction patterns with generative
+machine learning. Journal of the American Chemical Society, 146(44):30340–30348, 2024. doi:
+10.1021/jacs.4c10244. PMID: 39298266.
+A. N. Rubungo, K. Li, J. Hattrick-Simpers, and A. B. Dieng. LLM4mat-bench: Benchmarking
+large language models for materials property prediction. In AI for Accelerated Materials Design NeurIPS 2024, 2024.
+M. Schilling-Wilhelmi, M. Ríos-García, S. Shabih, M. V. Gil, S. Miret, C. T. Koch, J. A. Márquez,
+and K. M. Jablonka. From text to insight: large language models for chemical data extraction.
+Chemical Society Reviews, 2025.
+M. N. Schneider, M. Seibald, P. Lagally, and O. Oeckler. Ambiguities in the structure determination of antimony tellurides arising from almost homometric structure models and stacking disorder. Journal of Applied Crystallography, 43(5 Part 1):1012–1020, Oct 2010. doi:
+10.1107/S0021889810032644.
+Y. Shen, Y. Jiang, J. Lin, C. Wang, and J. Sun. A general method for searching for homometric structures. Acta Crystallographica Section B, 78(1):14–19, Feb 2022. doi: 10.1107/S2052520621011859.
+N. J. Szymanski, B. Rendy, Y. Fei, R. E. Kumar, T. He, D. Milsted, M. J. McDermott, M. Gallant,
+E. D. Cubuk, A. Merchant, et al. An autonomous laboratory for the accelerated synthesis of
+novel materials. Nature, 624(7990):86–91, 2023.
+M. Tatlier. Artificial neural network methods for the prediction of framework crystal structures
+of zeolites from xrd data. Neural Computing and Applications, 20(3):365–371, Apr 2011. ISSN
+1433-3058. doi: 10.1007/s00521-010-0386-4.
+A. Togo and I. Tanaka. Spglib: a software library for crystal symmetry search, 2018.
+H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N. Bashlykov, S. Batra,
+P. Bhargava, S. Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv
+preprint arXiv:2307.09288, 2023.
+A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. u. Kaiser, and
+I. Polosukhin. Attention is all you need. In I. Guyon, U. V. Luxburg, S. Bengio, H. Wallach,
+R. Fergus, S. Vishwanathan, and R. Garnett, editors, Advances in Neural Information Processing
+Systems, volume 30. Curran Associates, Inc., 2017.
+H. Wang, Y. Xie, D. Li, H. Deng, Y. Zhao, M. Xin, and J. Lin. Rapid identification of x-ray
+diffraction patterns based on very limited data by interpretable convolutional neural networks.
+Journal of Chemical Information and Modeling, 60(4):2004–2011, Apr 2020. ISSN 1549-9596. doi:
+10.1021/acs.jcim.0c00020.
+A. R. West. Solid State Chemistry and its Applications. Wiley, 2nd edition, 2014.
+T. Xie, X. Fu, O.-E. Ganea, R. Barzilay, and T. Jaakkola. Crystal diffusion variational autoencoder
+for periodic material generation, 2022.
+R. Young. The Rietveld Method. IUCr monographs on crystallography. Oxford University Press,
+1995. ISBN 9780198559122.
+C. Zeni, R. Pinsler, D. Zügner, A. Fowler, M. Horton, X. Fu, Z. Wang, A. Shysheya, J. Crabbé,
+S. Ueda, et al. A generative model for inorganic materials design. Nature, pages 1–3, 2025.
+D. Zhang, X. Liu, X. Zhang, C. Zhang, C. Cai, H. Bi, Y. Du, X. Qin, A. Peng, J. Huang, B. Li,
+Y. Shan, J. Zeng, Y. Zhang, S. Liu, Y. Li, J. Chang, X. Wang, S. Zhou, J. Liu, X. Luo, Z. Wang,
+W. Jiang, J. Wu, Y. Yang, J. Yang, M. Yang, F.-Q. Gong, L. Zhang, M. Shi, F.-Z. Dai, D. M.
+York, S. Liu, T. Zhu, Z. Zhong, J. Lv, J. Cheng, W. Jia, M. Chen, G. Ke, W. E, L. Zhang, and
+H. Wang. DPA-2: a large atomic model as a multi-task learner. npj Computational Materials, 10
+(1):293, Dec. 2024. ISSN 2057-3960. doi: 10.1038/s41524-024-01493-2.
+12
+
+H. Zhang, W. W. Chen, J. M. Rondinelli, and W. Chen. Et-al: Entropy-targeted active learning
+for bias mitigation in materials data. Applied Physics Reviews, 10(2):021403, 04 2023. ISSN
+1931-9401. doi: 10.1063/5.0138913.
+D. M. Ziegler, N. Stiennon, J. Wu, T. B. Brown, A. Radford, D. Amodei, P. Christiano, and
+G. Irving. Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593,
+2019.
+
+13
+
+A
+
+Appendix
+
+A.1
+
+Code and Data Availability
+
+The code for training and using the deCIFer model is open source and released under the MIT License.
+Official source code is available here: https://github.com/FrederikLizakJohansen/deCIFer.
+
+A.2
+
+CIF Syntax Standardization
+
+To enhance the transformer model to process CIFs effectively, we standardized all CIFs in the
+dataset. Inspired by CrystaLLM (Antunes et al., 2024), we employed similar pre-processing and
+tokenization strategies, incorporating additional steps to ensure that CHILI-100K (Friis-Jensen
+et al., 2024) was aligned to the standardized format of NOMA, by the removal certain details such
+as oxidation states and partial occupancies. We employ the following steps:
+1. Uniform Structure Conversion: CIFs were converted to pymatgen.Structure (Ong et al.,
+2013) objects to provide a consistent base representation.
+2. Standardized CIF Regeneration: Using pymatgen.CifWriter (Ong et al., 2013), CIFs
+were regenerated to ensure uniform formatting, eliminate customs headers, etc.
+3. Data Tag Normalization: The reduced formula, following the data_ tag was replaced with
+the full cell composition, sorted by atomic number for consistency.
+4. Symmetry Operator Removal: Symmetry operators were excluded during pre-processing
+to simplify the data, but reintroduced during evaluation for validating structural matches.
+This can easily be done because the reintroduction process uses the space group information
+retained in the pre-processed files, ensuring compatibility and accuracy.
+5. Incorporation of Extra Information: Custom properties that are easily derived from the
+composition of each CIF, such as electronegativity, atomic radius, and covalent radius, were
+appended to each CIF to maximize the readily available information within each CIF.
+6. Oxidation State and Occupancy Filtering: Oxidation state refers to the charge of
+an atom within a compound, which can vary depending on chemical bonding. Occupancy
+indicates the fraction of a particular atomic site that is occupied in the crystal structure (e.g.,
+a value of 1.0 represents a fully occupied site, while 0.5 indicates partial occupancy). All
+traces of oxidation states were removed, and only crystal structures with full occupancy were
+retained. This ensures consistency by aligning CHILI-100K (Friis-Jensen et al., 2024) with
+the standardized format of NOMA (Antunes et al., 2024).
+7. Numerical Value Normalization: Numerical values were rounded to four decimal places.
+Figure 7 shows a pre-processed and standardized CIF from the NOMA dataset alongside its
+corresponding unit cell representation and a realisation of its corresponding PXRD profile, as could
+be input into deCIFer.
+
+A.3
+
+CIF Tokenization
+
+To process CIF files effectively, we tokenized each file into a sequence of tokens using a custom
+vocabulary tailored to crystallographic data in the CIF format. Each CIF was parsed to extract
+key structural and chemical information, such as lattice parameters, atomic positions, and space
+group symbols. Numerical values were tokenized digit-by-digit, including decimal points and special
+characters as separate tokens. Table 3 shows all supported tokens.
+
+A.4
+
+Attention Masking Strategy
+
+Figure 8 provides a detailed visualization of the attention masking strategy employed in our model.
+It illustrates the log-mean attention weights (averaged over all heads) for a sample sequence,
+highlighting the isolation of CIFs through attention masking. The figure also demonstrates how the
+embeddings of the second CIF attend to the conditioning PXRD embedding. Lighter shades in the
+figure correspond to stronger attention values.
+
+14
+
+Figure 7: Illustration of a CIF after applying the pre-processing and standardization steps described.
+Also shown are the corresponding unit cell representation using VESTA (Momma and Izumi, 2008) for
+visualization and the simulated PXRD profile (with σ 2 = 0.00 and FWHM=0.01). The red highlight in the
+CIF indicates where the original symmetry operators were replaced during pre-processing and would be
+restored for evaluation.
+
+A.5
+
+PXRD Simulation
+
+What do the axes in PXRD mean? In a typical PXRD experiment, the x-axis corresponds
+to the magnitude of the scattering vector, commonly denoted by Q (in units of Å−1 ), or sometimes
+θ
+the diffraction angle 2θ. In this work, we use Q = 4π sin
+where λ is the radiation wavelength and
+λ
+θ is the scattering angle. The y-axis represents the scattered intensity observed at each Q-value,
+sometimes normalized to have a maximum intensity of 1.
+Peak data and transformations. Following the methods section, we start with the discrete
+diffraction peak data: P = (qk , ik )nk=1 , where each qk is the center of a reflection peak, and ik is
+the associated peak intensity. To simulate experimental effects, we apply transformation τ ∼ T ,
+which includes peak broadening and additive noise.
+Peak broadening. For each peak k, centered at qk , we convolve an idealized delta function peak
+with a pseudo-Voigt profile. At the continuous variable Q, the psuedo-Voigt profile is the mixture
+of a Lorentzian L and a Gaussian G, such that
+PVk (Q − qk ) = ηL(Q − qk ) + (1 − η)G(Q − qk ),
+
+(2)
+
+where 0 ≤ η ≤ 1 is fixed at η = 0.5 in this work.
+Let FWHM denote the full width at half maximum. The Lorentzian half-width is then γ =
+FWHM
+, making
+2
+1
+.
+
+L(Q − qk ) =
+(3)
+k
+1 + Q−q
+γ
+√
+, making
+The Gaussian standard deviation is σ = 2FWHM
+2 ln 2
+
+
+
+2 
+k
+G(Q − qk ) = exp − 12 Q−q
+.
+σ
+
+(4)
+
+Convolved PXRD. Given the peak centers qk , itensities ik , and a choice of FWHM, we obtain
+the convolved PXRD profile
+n
+X
+Iconv (Q) =
+ik PVk (Q − qk ).
+(5)
+k=1
+
+Afterwards, we normalize Iconv (Q) so that its maximum intensity is 1.
+
+15
+
+Figure 8: Visualization of the attention masking strategy, showing the log-mean attention weights (averaged
+over all heads) for an example sequence and highlighting how CIFs are isolated using the attention mask.
+The figure also illustrates how the embeddings of the second CIF attend to the conditioning PXRD
+embedding. Lighter shades indicate stronger attention.
+
+2
+Figure 9: Simulated PXRD profiles with fixed transformation of FWHM and σnoise
+as indicated. Discrete
+n
+peaks, P = {(qk , ik )}k=1 , are shown in red, while the convolved PXRD profiles, y, are shown in blue.
+Examples with minimal and maximal noise and broadening levels are shown for a compound with composition
+CdRhBr2 and space group R3m.
+
+2
+Noise addition. Let ϵ(Q) be drawn from a zero-mean Gaussian distribution with variance σnoise
+.
+This yields the final transformed intensity PXRD profile:
+
+I(Q) = Iconv (Q) + ϵ(Q).
+
+(6)
+
+Implementation details. In practice, we use the XRDCalculator from the pymatgen library (Ong
+et al., 2013) for generating the initial discrete peak data P. For training, we sample Q-values
+in [Qmin , Qmax ] at increments of Qstep . We then apply random transformations τ during model
+training. Specific parameters for FWHM and σnoise are listed in Table 4.
+
+A.6
+
+Validity Metrics
+
+To evaluate consistency and chemical sensibility of the generated CIFs, we conduct a series of
+validation checks. The methodology is described below.
+Formula Consistency
+We check for consistency in the chemical formula printed in different locations within the CIF.
+Specifically, we ensure that:
+
+16
+
+• The chemical formula in the _chemical_formula_sum tag matches the reduced chemical
+formula derived from the atomic sites.
+• The chemical formula in the _chemical_formula_structural tag is consistent with the
+composition derived from the CIF file.
+Site Multiplicity Consistency
+We validate that the total multiplicity of atomic sites is consistent with the stoichiometry derived
+from the composition. Specifically, we ensure:
+• The atom types are specified under the _atom_site_type_symbol tag.
+• The multiplicity of each atom is provided in the _atom_site_symmetry_multiplicity tag.
+• The total number of atoms derived from these tags matches the stoichiometry derived from
+the _chemical_formula_sum tag.
+Bond Length Reasonability
+To check the reasonableness of bond lengths:
+• We use a Voronoi-based nearest-neighbour algorithm implemented in the CrystalNN module
+of pymatgen (Ong et al., 2013) to identify bonded atoms.
+• For each bond, the expected bond length is calculated based on the atomic radii and the
+electronegativity difference between the bonded atoms:
+– If the electronegativity difference is greater than or equal to 1.7, the bond is treated as
+ionic, and the bond length is based on the cationic and anionic radii.
+– Otherwise, the bond is treated as covalent, and the bond length is based on the atomic
+radii.
+• A bond length reasonableness score B is computed as the fraction of bonds whose lengths are
+within ±30% of the expected lengths.
+• A structure passes this test if B ≥ cbond , where cbond = 1.0.
+Space Group Consistency
+We validate the space group by:
+• Extracting the stated space group from the _symmetry_space_group_name_H-M tag.
+• Analyzing the space group symmetry using the SpacegroupAnalyzer class in pymatgen (Ong
+et al., 2013), which employs the spglib (Togo and Tanaka, 2018) library.
+• Comparing the stated space group with the one determined by the symmetry analysis.
+Overall Validity
+A CIF file is deemed valid if all the above checks are satisfied:
+• Formula consistency (FM).
+• Site multiplicity consistency (SM).
+• Bond length reasonableness B ≥ cbond , where cbond = 1.0 (BL).
+• Space group consistency (SG).
+
+A.7
+
+Match Rate
+
+The Match Rate (MR) quantifies how many generated structures successfully match their corresponding reference structures, as determined by StructureMatcher from the pymatgen library (Ong et al.,
+2013). Two structures are considered a match if their compositions, lattice parameters, atomic coordinates, and symmetry are sufficiently similar, according to the tolerances set in StructureMatcher.
+For the implementation of deCIFer, we follow the example set by CrystaLLM (Antunes et al., 2024),
+using the parameter values:
+• stol = 0.5: site tolerance, defined as a fraction of the average free length per atom.
+• angle_tol = 10◦ : maximum angular deviation tolerance.
+17
+
+Dataset
+OQMD
+
+NOMAD
+
+81
+
+101
+121
+Spacegroup Number
+
+141
+
+4
+
+6
+Number of Elements in Unit Cells
+
+CIF Count
+
+MP
+105
+102
+
+CIF Count
+
+1
+
+21
+
+41
+
+61
+
+181
+
+201
+
+221
+
+103
+2
+
+8
+
+10
+
+103
+H (1)
+He (2)
+Li (3)
+Be (4)
+B (5)
+C (6)
+N (7)
+O (8)
+F (9)
+Ne (10)
+Na (11)
+Mg (12)
+Al (13)
+Si (14)
+P (15)
+S (16)
+Cl (17)
+Ar (18)
+K (19)
+Ca (20)
+Sc (21)
+Ti (22)
+V (23)
+Cr (24)
+Mn (25)
+Fe (26)
+Co (27)
+Ni (28)
+Cu (29)
+Zn (30)
+Ga (31)
+Ge (32)
+As (33)
+Se (34)
+Br (35)
+Kr (36)
+Rb (37)
+Sr (38)
+Y (39)
+Zr (40)
+Nb (41)
+Mo (42)
+Tc (43)
+Ru (44)
+Rh (45)
+Pd (46)
+Ag (47)
+Cd (48)
+In (49)
+Sn (50)
+Sb (51)
+Te (52)
+I (53)
+Xe (54)
+Cs (55)
+Ba (56)
+La (57)
+Ce (58)
+Pr (59)
+Nd (60)
+Pm (61)
+Sm (62)
+Eu (63)
+Gd (64)
+Tb (65)
+Dy (66)
+Ho (67)
+Er (68)
+Tm (69)
+Yb (70)
+Lu (71)
+Hf (72)
+Ta (73)
+W (74)
+Re (75)
+Os (76)
+Ir (77)
+Pt (78)
+Au (79)
+Hg (80)
+Tl (81)
+Pb (82)
+Bi (83)
+Ac (84)
+Th (85)
+Pa (86)
+U (87)
+Np (88)
+Pu (89)
+
+Occurrences
+
+161
+
+Occurences
+
+Element
+
+0.039%
+
+103
+0
+
+1000
+
+2000
+
+3000
+
+4000
+CIF token length
+
+5000
+
+6000
+
+7000
+
+Figure 10: Statistical overview of the NOMA (Antunes et al., 2024) dataset (2,283,346 total samples),
+showing the distribution of space group frequencies, the number of elements per unit cell, elemental
+occurrences and CIF token lengths (indicating the percentage of CIFs with larger token sequences than the
+context length of 3076)
+
+• ltol = 0.3: fractional length tolerance, meaning the lattice parameters can differ by up to
+30% relative to the reference lattice.
+StructureMatcher compares two structures by:
+• Optionally reducing them to primitive (Niggli) cells.
+• Verifying that the lattice parameters are within the fractional length tolerance (ltol).
+• Checking that the angles are within the angle tolerance (angle_tol).
+• Ensuring that atomic coordinates align within the site tolerance (stol), normalized by the
+average free length per atom.
+With these parameters, each generated CIF is compared against its reference CIF*. If the two
+structures are deemed structurally equivalent, we count that as a successful match. MR is computed
+as the fraction of structures in the dataset for which a match is found:
+MR =
+
+N
+
+1 X
+1 match(CIF, CIF∗ ) ,
+N i=1
+
+(7)
+
+where N is the total number of structures and 1(·) is an indicator function that returns 1 if two
+structures match (according to StructureMatcher) and 0 otherwise.
+
+A.8
+
+Datasets Statistics
+
+Figure 10 illustrates the NOMA dataset. Figure 11 illustrates the statistics of the curated CHILI100K (Friis-Jensen et al., 2024) dataset.
+
+A.9
+
+Model Architecture- and Training Details
+
+Table 4 provides a concise overview of all hyperparameters and data augmentation settings used
+for training deCIFer (and its variant U-deCIFer). Below, we describe additional implementation
+details.
+18
+
+CIF Count
+
+Dataset
+CHILI-100K
+
+103
+101
+
+CIF Count
+
+1
+
+21
+
+41
+
+61
+
+81
+
+101
+121
+Spacegroup Number
+
+141
+
+4
+
+5
+Number of Elements in Unit Cells
+
+161
+
+181
+
+201
+
+221
+
+103
+102
+101
+
+103
+102
+101
+
+3
+
+6
+
+7
+
+8
+
+H (1)
+Li (2)
+Be (3)
+B (4)
+C (5)
+N (6)
+O (7)
+F (8)
+Na (9)
+Mg (10)
+Al (11)
+Si (12)
+P (13)
+S (14)
+Cl (15)
+K (16)
+Ca (17)
+Sc (18)
+Ti (19)
+V (20)
+Cr (21)
+Mn (22)
+Fe (23)
+Co (24)
+Ni (25)
+Cu (26)
+Zn (27)
+Ga (28)
+Ge (29)
+As (30)
+Se (31)
+Br (32)
+Rb (33)
+Sr (34)
+Y (35)
+Zr (36)
+Nb (37)
+Mo (38)
+Tc (39)
+Ru (40)
+Rh (41)
+Pd (42)
+Ag (43)
+Cd (44)
+In (45)
+Sn (46)
+Sb (47)
+Te (48)
+I (49)
+Xe (50)
+Cs (51)
+Ba (52)
+La (53)
+Ce (54)
+Pr (55)
+Nd (56)
+Sm (57)
+Eu (58)
+Gd (59)
+Tb (60)
+Dy (62)
+Ho (63)
+Er (64)
+Tm (65)
+Yb (66)
+Lu (67)
+Hf (68)
+Ta (69)
+W (70)
+Re (71)
+Os (72)
+Ir (73)
+Pt (74)
+Au (75)
+Hg (76)
+Tl (77)
+Pb (78)
+Bi (79)
+Th (80)
+Pa (81)
+U (82)
+Np (83)
+Pu (84)
+Am (85)
+
+Occurrences
+
+103
+102
+101
+
+Occurences
+
+2
+
+Element
+
+0.134%
+1000
+
+2000
+CIF token length
+
+3000
+
+4000
+
+Figure 11: Statistical overview of the curated CHILI-100K (Friis-Jensen et al., 2024) dataset (8201 total
+samples), showing the distribution of space group frequencies, the number of elements per unit cell, elemental
+occurrences, and CIF token lengths (indicating the percentage of CIFs with larger token sequences than the
+context length of 3076).
+
+Data-stratification We extract the space group number from each CIF (ranging from 1 to
+230) and group these into bins of size ten (e.g., 1–10, 11–20, etc.). This heuristic aims to
+preserve the overall symmetry distribution across splits while reducing the risk of data leakage
+from structurally similar entries appearing in multiple subsets. While this does ensures coverage
+across symmetry classes and even representation of crystal systems across the splits, it does not
+reflect the most intuitive or principled grouping scheme. In particular, it does not account for
+finer-grained biases that may be embedded in crystal symmetry or composition distributions. This
+points to a broader issue in materials datasets: statistical artefacts, such as the "Rule of Four"
+or symmetry clustering (Gazzarrini et al., 2024), can introduce shortcuts that models may learn,
+reducing generalisation and interpretability (Palgrave, 2024). Future work should explore alternative
+stratification strategies (e.g., stratified sampling based on structural descriptors) to better assess
+generalisation.
+Hardware Setup All experiments were conducted on GPUs with sufficient memory to accommodate a batch size of 32 tokenized sequences, each truncated or padded to a context length of 3076.
+We employed half-precision (float16) to reduce memory usage and improve throughput, ensuring
+that gradient updates remain numerically stable via built-in automatic mixed-precision.
+Optimizer and Learning Rate Schedule. We adopt AdamW with a base learning rate of
+1 × 10−3 , which is warmed up for 100 steps and then gradually decayed to 1 × 10−6 over 50,000
+steps (Table 4). Weight decay is set to 0.1 to regularize model parameters, and we employ gradient
+accumulation (40 steps) to effectively increase the total number of tokens processed per update.
+Transformer Architectural Notes. The final transformer stack has 8 layers, each with 8
+attention heads, and a model dimension of 512 (embedding dimension). The feed-forward blocks
+inside each layer use a dimension of 4 × 512, and dropout is set to 0.0 to minimize underfitting. We
+continue to observe stable convergence in practice despite using no dropout.
+Maximum Iterations and Convergence. We train for 50,000 iterations, at which point the
+model’s cross-entropy loss stabilizes, as illustrated in Figure 12. Beyond this range, no significant
+improvements were observed on validation metrics.
+19
+
+Cross-Entropy Loss
+
+0.30
+
+U-deCIFer [Train]
+U-deCIFer [Validation]
+deCIFer [Train]
+deCIFer [Validation]
+
+0.25
+0.20
+
+0.1717
+
+0.15
+
+0.1360
+
+0
+
+10000
+
+20000
+
+30000
+
+Epoch
+
+40000
+
+50000
+
+Figure 12: Cross-entropy loss curves for U-deCIFer and deCIFer over 50,000 training iterations, showing
+progressive reduction in the training and validation losses.
+
+Figure 13: 2D PCA projection of learned PXRD embeddings for 500K training-set samples from NOMA.
+The three subplots are colored by crystal system, log(cell volume), and average atomic number Z, illustrating
+clear gradients that correspond to structural and compositional features as indicated by the arrows.
+
+A.10
+
+PXRD Embedding Space
+
+For completeness, we examined the learned embeddings for 50K random training-set PXRD profiles
+and applied principle component analysis (PCA) for visualization. As shown in Figure 13, the
+embeddings form distinct gradients when colored by crystal system, cell-volumes, and constituent
+atomic numbers Z, indicating that the model’s PXRD embedding captures relevant structural
+characteristics, such as symmetry, scale, and elemental composition. These patterns highlight the
+effectiveness of the conditioning mechanism in encoding meaningful structural information directly
+from the PXRD input.
+
+A.11
+
+Baseline Comparison with and without PXRD
+
+With regards to the baseline comparison in Table 1, deCIFer is explicitly conditioned on PXRD data,
+while the baseline models are conditioned only on composition or latent priors. This distinction
+means that the comparisons are not direct but instead reveal the relative value of PXRD conditioning.
+In particular, PXRD conditioning can improve structure prediction when the diffraction signal is
+rich in structural information, but may introduce ambiguity or conflict with the model’s learned
+priors in cases where the PXRD pattern is noisy or minimally informative. Perov-5 and Carbon-24
+20
+
+(0.00, 0.05°)
+
+(0.05, 0.10°)
+
+Lower Symmetry
+
+Cubic
+Hexagonal
+Trigonal
+Tetragonal
+Orthorhombic
+Monoclinic
+Triclinic
+
+(0.10, 0.20°)
+
+0.0
+
+6076
+6079
+6071
+
+811
+812
+809
+1688
+1684
+1687
+
+129
+133
+132
+
+0.5
+
+Rwp
+
+1.0 0
+
+3841
+3843
+3838
+4567
+4570
+4563
+2839
+2846
+2843
+
+5000
+
+Sample
+Distribution
+
+Figure 14: Average metric values by crystal systems for deCIFer on the NOMA test set under two indistribution transformations of the input PXRD profiles and one out-of-distribution transformation. deCIFer
+shows better performance for well-represented systems, while rarer, low-symmetry systems lead to worse
+performance. The right-most plot shows crystal system distribution of the NOMA test set.
+
+provide strong tests of PXRD conditioning due to their polyhedral complexity and carbon-based
+structural diversity, where diffraction features can directly inform the model. In contrast, MP-20
+is drawn from the Materials Project, a dataset where composition-only models may benefit from
+learned priors due to the high representation of standard chemistries. MPTS-52 further challenges
+models with low-symmetry structures, where the PXRD signal can become ambiguous, making it
+difficult for a model to resolve atomic positions purely from the diffraction pattern.
+
+A.12
+
+Additional Results
+
+Figures 16, 14, and 15 provide additional insights into deCIFer’s performance. Table 5 shows a
+detailsed breakdown of the validity metrics for the NOMA test set corresponding to the results
+in Figure 3. Table 6 shows a detailed breakdown of validity metrics for the NOMA test set and
+CHILI-100K test set evaluated on two in-distribution (ID) scenarios and one out-of-distribution
+(OOD) scenario for the PXRD input.
+
+A.13
+
+Future Work
+
+One promising area for improvement lies in exploring more advanced decoding strategies, such as
+beam search, to enhance the generative model’s capabilities in downstream tasks. By maintaining
+multiple hypotheses during decoding, beam search could produce diverse candidate CIFs for a given
+PXRD profile, improving structure determination accuracy by ranking outputs based on metrics
+like Rwp . This method could also support optimization strategies that prioritize structural validity
+and relevance.
+Another direction could be to integrate reinforcement learning from human feedback (RLHF) to
+guide the model more directly toward generating accurate and chemically valid structures (Ziegler
+et al., 2019). By defining a reward function tailored to properties such as low Rwp values, structural
+integrity, and adherence to chemical constraints, and interaction with a human expert, RLHF could
+further refine the model’s outputs.
+A complementary direction for future improvement lies in increasing the diversity of the training
+data. While NOMA offers excellent scale, its distribution is skewed toward high-symmetry and
+well-sampled structures, which limits model generalisation to more uncommon systems. CHILI100K, with its broader structural complexity and greater representation of low-symmetry crystals,
+could serve as a valuable training supplement. Mixing synthetic and experimental data, or applying
+curriculum learning strategies that gradually expose the model to under-represented symmetry
+groups, could improve generalisation and robustness, particularly for monoclinic and triclinic
+systems, which remain challenging as seen in Figure 4.
+
+21
+
+(0.00, 0.05°)
+
+(0.05, 0.10°)
+
+(0.10, 0.20)°
+2183
+2182
+2174
+1184
+1188
+1190
+1109
+1110
+1111
+1692
+1694
+1694
+3253
+3254
+3266
+
+Lower Symmetry
+
+Cubic
+Hexagonal
+Trigonal
+Tetragonal
+Orthorhombic
+Monoclinic
+Triclinic
+0.0
+
+0.5
+
+1.0 0
+
+Rwp
+
+4981
+4976
+4983
+5296
+5289
+5283
+
+5000
+
+Sample
+Distribution
+
+Figure 15: Average metric values by crystal systems for deCIFer on the CHILI-100K test set show better
+performance for well-represented systems in the training data (NOMA), while low-symmetry systems lead
+to worse performance. The right-most plot shows crystal system distribution of the CHILI-100K test set,
+highlighting that CHILI-100K contains a significantly higher proportion of lower-symmetry structures
+compared to synthetic datasets like NOMA.
+
+ID: (0.00, 0.05)
+ID: (0.05, 0.05)
+ID: (0.00, 0.10)
+ID: (0.05, 0.10)
+OOD: (0.10, 0.05)
+OOD: (0.00, 0.20)
+OOD: (0.10, 0.20)
+0.0
+
+1.0
+
+Rwp
+
+2.0
+
+3.0
+
+Figure 16: Distribution of Rwp for deCIFer on the NOMA- and CHILI-100K test set, presented as violin
+plots with overlain boxplots; the median is shown for each distribution. Presented are four in-distribution
+transformations of the input PXRD profiles and three out-of-distribution transformations.
+
+22
+
+Table 3: Supported atoms, CIF tags, space groups, numbers, and special tokens.
+Category
+
+Num.
+
+Tokens
+
+Atoms
+
+89
+
+Si C Pb I Br Cl Eu O Fe Sb In S N U Mn Lu Se Tl Hf Ir Ca Ta Cr K
+Pm Mg Zn Cu Sn Ti B W P H Pd As Co Np Tc Hg Pu Al Tm Tb Ho
+Nb Ge Zr Cd V Sr Ni Rh Th Na Ru La Re Y Er Ce Pt Ga Li Cs F Ba
+Te Mo Gd Pr Bi Sc Ag Rb Dy Yb Nd Au Os Pa Sm Be Ac Xe Kr He
+Ne Ar
+
+CIF Tags
+
+31
+
+data_
+loop_
+_symmetry_space_group_name_H-M
+_symmetry_Int_Tables_number
+_cell_length_a
+_cell_length_b
+_cell_length_c
+_cell_angle_alpha
+_cell_angle_beta
+_cell_angle_gamma
+_cell_volume
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+_symmetry_equiv_pos_as_xyz
+_chemical_formula_structural
+_cell_formula_units_Z
+_chemical_name_systematic
+_chemical_formula_sum
+_atom_site_symmetry_multiplicity
+_atom_site_attached_hydrogens
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_B_iso_or_equiv
+_symmetry_equiv_pos_site_id
+_atom_type_symbol
+_atom_type_electronegativity
+_atom_type_radius
+_atom_type_ionic_radius
+_atom_type_oxidation_number
+
+Space
+Groups
+
+230
+
+P6/mmm Imma P4_32_12 P4_2/mnm Fd-3m P3m1 P-3 P4mm
+P4_332 P4/nnc P2_12_12 Pnn2 Pbcn P4_2/n Cm R3m Cmce Aea2
+P-42_1m P-42m P2_13 R-3 Fm-3 Cmm2 Pn-3n P6/mcc P-6m2 P3_2
+P-3m1 P3_212 I23 P-62m P4_2nm Pma2 Pmma I-42m P-31c Pa-3
+Pmmn Pmmm P4_2/ncm I4/mcm I-4m2 P3_1 Pcc2 Cmcm I222 Fddd
+P312 Cccm P6_1 F-43c P6_322 Pm-3 P3_121 P6_4 Ia-3d Pm-3m
+P2_1/c C222_1 Pc P4/n Pba2 Ama2 Pbcm P31m Pcca P222 P-43n
+Pccm P6_422 F23 P42_12 C222 Pnnn P6_3cm P4_12_12 P6/m
+Fmm2 I4_1/a P4/mbm Pmn2_1 P4_2bc P4_22_12 I-43d I4/m P4bm
+Fdd2 P3 P6_122 Pnc2 P4_2/mcm P4_122 Cmc2_1 P-6c2 R32 P4_1
+P4_232 Pnna P422 Pban Cc I4_122 P6_3/m P6_3mc I4_1/amd P4_2
+P4/nmm Pmna P4/m Fm-3m P4/mmm Imm2 P4/ncc P-62c Ima2 P6_5
+P2/c P4/nbm Ibam P6_522 P6_3/mmc I4/mmm Fmmm P2/m P-4b2
+I-4 C2/m P4_2/mmc P4 Fd-3c P4_3 P2_1/m I-43m P-42c F4_132 Pm
+Pccn P-4n2 P4_132 P23 I4cm R3c Amm2 Immm Iba2 I4 Fd-3 P1 Pbam
+P4_2/nbc Im-3 P4_2/nnm Pmc2_1 P-31m R-3m Ia-3 P622 F222 P2
+P-1 Pmm2 P-4 Aem2 P6_222 P-3c1 P4_322 I422 Pnma P6_3 P3c1
+Pn-3 P4nc P-6 P4/mcc I2_12_12_1 P4_2/mbc P31c Ccc2 P4_2/nmc
+P6_3/mcm C2 Pbca P-4c2 I4_1cd P2_1 P3_112 P4_2mc Pn-3m
+C2/c R3 P-43m I432 P222_1 I-42d I-4c2 P6cc P6_2 P3_221 P321
+Pca2_1 I4_1/acd I4_132 F432 Pna2_1 Ccce Ibca P4/mnc I4_1md
+P2_12_12_1 R-3c I2_13 P-4m2 Pm-3n I4mm F-43m Pnnm P-42_1c
+Cmmm P6mm P4_2cm P4_2/m Im-3m Fm-3c I4_1 P4cc Cmme
+
+Numbers
+
+10
+
+1234567890
+
+Special
+
+13
+
+x y z . ( ) ’ , ⟨space⟩ ⟨newline⟩ ⟨unk⟩ ⟨pad⟩ ⟨cond⟩
+
+23
+
+Table 4: Training configuration for deCIFer and U-deCIFer.
+
+PXRD Transformation Training Parameters
+
+Value
+
+Wavelength (λ)
+Q-grid (Qmin , Qmax , Qstep )
+FWHM
+Mixing Factor (η)
+Noise Magnitude
+
+Cu-Kα (1.5406 Å)
+(0.0, 10.0, 0.01)
+U ∼ (0.001, 0.10)
+0.5
+U ∼ (0.001, 0.05)
+
+Model / Training Parameters
+
+Value
+
+Optimizer
+Learning Rate
+Warmup Steps
+Decay Steps
+Minimum Learning Rate
+Weight Decay
+Batch Size
+Gradient Accumulation Steps
+Maximum Iterations
+Embedding Dimension (nembd )
+Layers (nlayer )
+Attention Heads (nhead )
+Conditioning Model Layers (nc-layers )
+Conditioning Model Hidden Size
+Sequence Length (block_size)
+Precision
+Dropout
+
+AdamW
+1 × 10−3
+100
+50,000
+1 × 10−6
+0.1
+32
+40
+50,000
+512
+8
+8
+2
+512
+3076
+float16
+0.0
+
+Table 5: Validity of generated CIFs for the NOMA test set using deCIFer and U-deCIFer. Abbreviations:
+Form = formula validity, SG = space group validity, BL = bond length validity, SM = site multiplicity
+validity. Overall validity (Val.) is calculated as the percentage of CIFs that satisfy all four validity metrics
+simultaneously. Match rate (MR) represents the percentage of generated CIFs that replicate the reference
+CIF.
+
+Form (%) ↑ SG (%) ↑ BL (%) ↑ SM (%) ↑ Val. (%) ↑ MR (%) ↑
+
+Desc.
+
+Model
+
+none
+
+U-deCIFer
+deCIFer
+
+99.82
+99.42
+
+98.87
+98.85
+
+94.30
+93.69
+
+99.47
+99.46
+
+93.49
+92.66
+
+0.00
+5.01
+
+comp.
+
+U-deCIFer
+deCIFer
+
+99.87
+99.68
+
+99.09
+99.21
+
+94.40
+94.37
+
+99.46
+99.55
+
+93.78
+93.73
+
+49.30
+91.50
+
+comp.+s.g.
+
+U-deCIFer
+deCIFer
+
+99.85
+99.74
+
+98.88
+99.26
+
+94.51
+94.38
+
+99.47
+99.58
+
+93.72
+93.90
+
+87.07
+94.53
+
+Table 6: Validity of generated CIFs for the CHILI-100K test set using deCIFer. Abbreviations: Form =
+formula validity, SG = space group validity, BL = bond length validity, SM = site multiplicity validity.
+Overall validity (Val.) is calculated as the percentage of CIFs that satisfy all four validity metrics
+simultaneously. Match rate (MR) represents the percentage of generated CIFs that replicate the reference
+CIF.
+
+Dataset
+
+2
+(σnoise
+, FWHM)
+
+FORM (%) ↑
+
+SG (%) ↑
+
+BL (%) ↑
+
+SM (%) ↑
+
+Val. (%) ↑
+
+MR (%) ↑
+
+NOMA
+
+ID: (0.00, 0.05)
+ID: (0.05, 0.10)
+
+99.68
+99.64
+
+99.21
+99.18
+
+94.37
+94.39
+
+99.55
+99.55
+
+93.73
+93.77
+
+91.50
+89.28
+
+OOD: (0.10, 0.20)
+
+99.60
+
+99.87
+
+92.60
+
+99.49
+
+91.66
+
+77.66
+
+ID: (0.00, 0.05)
+ID: (0.05, 0.10)
+
+95.98
+96.17
+
+97.88
+98.22
+
+42.61
+41.50
+
+94.58
+94.47
+
+41.83
+40.95
+
+37.34
+35.97
+
+OOD: (0.10, 0.20)
+
+95.80
+
+98.42
+
+34.11
+
+93.91
+
+33.62
+
+26.09
+
+CHILI-100K
+
+24
+
+
