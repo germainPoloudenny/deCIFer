@@ -1,11 +1,11 @@
 # CONFIG YAML
 
-out_dir: 'runs/deCIFer_cifs_v1_model' 
+out_dir: 'runs/deCIFer' 
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200 # how many iterations for evaluating training loss
 eval_iters_val: 200 # how many iterations for evaluating validation loss
 log_interval: 1  # how often to print to the console (1 = every iteration)
-init_from: 'resume' # intialise from ["scratch", "resume"]
+init_from: 'scratch' # intialise from ["scratch", "resume"]
 
 device: 'cuda' # device
 dtype: 'float16' # device dtype
@@ -14,11 +14,11 @@ dist_backend: 'nccl' # backend used for torch.distributed
 
 always_save_checkpoint: True # always save checkpoint
 use_tensorboard: True
-tensorboard_log_dir: 'runs/deCIFer_cifs_v1_model/tensorboard'
+tensorboard_log_dir: 'runs/deCIFer/tensorboard'
 
 validate: True # validate with a validation set
 
-dataset: '../crystallography/data/noma-1k'
+dataset: '../crystallography/data/noma'
 batch_size: 64 # batch size
 block_size: 3076 # context window
 num_workers_dataloader: 4 # enable multi-process data loading
@@ -29,8 +29,8 @@ n_embd: 512 # n_embed
 dropout: 0.0 # dropout
 
 learning_rate: 1e-3 # learning rate (AdamW)
-gradient_accumulation_steps: 40  # used to simulate larger batch sizes
-max_iters: 60_000 # max number of epochs
+gradient_accumulation_steps: 20  # used to simulate larger batch sizes
+max_iters: 50_000 # max number of epochs
 lr_decay_iters: 50_000 # learning reate decay
 min_lr: 1e-6 # min learning rate
 beta2: 0.99 # beta2
@@ -46,5 +46,3 @@ noise_range_max: 0.05 # max. for the uniform sampling of std. for additive noise
 
 condition: True # Enable conditioning (deCIFer)
 boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
-
-dataset_fraction: 1

@@ -303,7 +303,16 @@ def setup_datasets(C, distributed=False, show_progress=True, *, rank: int = 0, w
     train_dataloader = DataLoader(train_dataset, **loader_kwargs)
 
     # Random batching sampler, val
-    val_sampler = SubsetRandomSampler(range(len(val_dataset)))
+    if distributed:
+        val_sampler = DistributedSampler(
+            val_dataset,
+            shuffle=False,
+            drop_last=False,
+            num_replicas=world_size,
+            rank=rank,
+        )
+    else:
+        val_sampler = SubsetRandomSampler(range(len(val_dataset)))
     val_batch_sampler = RandomBatchSampler(val_sampler, batch_size=C.batch_size, drop_last=False)
     val_loader_kwargs = {
         "batch_sampler": val_batch_sampler,
@@ -319,7 +328,16 @@ def setup_datasets(C, distributed=False, show_progress=True, *, rank: int = 0, w
     val_dataloader = DataLoader(val_dataset, **val_loader_kwargs)
 
     # Random batching sampler, test
-    test_sampler = SubsetRandomSampler(range(len(test_dataset)))
+    if distributed:
+        test_sampler = DistributedSampler(
+            test_dataset,
+            shuffle=False,
+            drop_last=False,
+            num_replicas=world_size,
+            rank=rank,
+        )
+    else:
+        test_sampler = SubsetRandomSampler(range(len(test_dataset)))
     test_batch_sampler = RandomBatchSampler(test_sampler, batch_size=C.batch_size, drop_last=False)
     test_loader_kwargs = {
         "batch_sampler": test_batch_sampler,
