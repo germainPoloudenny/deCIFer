@@ -1,6 +1,6 @@
 # CONFIG YAML
 
-out_dir: 'U-deCIFer_model' # output directory for model checkpoint
+out_dir: 'main_u_decifer' # output directory for model checkpoint
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200 # how many iterations for evaluating training loss
 eval_iters_val: 200 # how many iterations for evaluating validation loss
@@ -14,7 +14,7 @@ always_save_checkpoint: True # always save checkpoint
 
 validate: True # validate with a validation set
 
-dataset: 'data/noma/full' # path to dataset, can be to subset or full dataset
+dataset: '../crystallography/data/noma'  # path to dataset, can be to subset or full dataset
 batch_size: 32 # batch size
 block_size: 3076 # context window
 
