@@ -1,6 +1,6 @@
 # CONFIG YAML
 
-out_dir: 'runs/comp' 
+out_dir: 'runs/clw_10/comp' 
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200 # how many iterations for evaluating training loss
 eval_iters_val: 200 # how many iterations for evaluating validation loss
@@ -14,7 +14,7 @@ dist_backend: 'nccl' # backend used for torch.distributed
 
 always_save_checkpoint: True # always save checkpoint
 use_tensorboard: True
-tensorboard_log_dir: 'runs/comp/tensorboard'
+tensorboard_log_dir: 'runs/comp/clw_10/tensorboard'
 
 validate: True # validate with a validation set
 
@@ -47,4 +47,4 @@ noise_range_max: 0.05 # max. for the uniform sampling of std. for additive noise
 condition: True # Enable conditioning (deCIFer)
 boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
 
-composition_loss_weight: 5
+composition_loss_weight: 10
