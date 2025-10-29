@@ -15,7 +15,7 @@ always_save_checkpoint: True # always save checkpoint
 validate: True # validate with a validation set
 
 dataset: '../crystallography/data/noma'  # path to dataset, can be to subset or full dataset
-batch_size: 32 # batch size
+batch_size: 64 # batch size
 block_size: 3076 # context window
 
 n_layer: 8 # n_layers
