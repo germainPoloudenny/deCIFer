@@ -21,6 +21,24 @@ TOKENIZER = Tokenizer()
 NEWLINE_ID = TOKENIZER.token_to_id["\n"]
 PADDING_ID = TOKENIZER.padding_id
 
+COMPOSITION_SYMBOLS = ("+", "-", "(", ")")
+COMPOSITION_KEYWORDS = [
+    kw for kw in TOKENIZER.keywords() if kw.startswith("_chemical_formula_")
+]
+
+_token_to_id = TOKENIZER.token_to_id
+_composition_tokens = set(TOKENIZER.atoms())
+_composition_tokens.update(TOKENIZER.digits())
+_composition_tokens.update(COMPOSITION_SYMBOLS)
+_composition_tokens.update(COMPOSITION_KEYWORDS)
+COMPOSITION_TOKEN_IDS = sorted(
+    _token_to_id[token]
+    for token in _composition_tokens
+    if token in _token_to_id
+)
+del _token_to_id
+del _composition_tokens
+
 @dataclass
 class DeciferConfig:
     block_size: int = 1024
@@ -35,6 +53,7 @@ class DeciferConfig:
     condition_size: int = 1000
     condition_embedder_hidden_layers: List[int] = field(default_factory=lambda: [512])
     plot_attention: bool = False
+    composition_loss_weight: float = 1.0
 
 class LayerNorm(nn.Module):
 
@@ -220,6 +239,12 @@ class Decifer(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # https://paperswithcode.com/method/weight-tying
         self.transformer.wte.weight = self.lm_head.weight
+
+        composition_mask = torch.zeros(config.vocab_size, dtype=torch.bool)
+        for token_id in COMPOSITION_TOKEN_IDS:
+            if token_id < config.vocab_size:
+                composition_mask[token_id] = True
+        self.register_buffer("composition_token_mask", composition_mask, persistent=False)
 
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -419,7 +444,42 @@ class Decifer(nn.Module):
 
         if targets is not None:
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            logits_flat = logits.view(-1, logits.size(-1))
+            targets_flat = targets.view(-1)
+            loss_raw = F.cross_entropy(
+                logits_flat,
+                targets_flat,
+                reduction="none",
+                ignore_index=-1,
+            )
+            loss_raw = loss_raw.view_as(targets)
+
+            weights = torch.ones_like(loss_raw)
+            ignore_mask = targets == -1
+            weights = torch.where(ignore_mask, torch.zeros_like(weights), weights)
+
+            pad_mask = targets == PADDING_ID
+            weights = torch.where(pad_mask, torch.zeros_like(weights), weights)
+
+            valid_mask = (~ignore_mask) & (~pad_mask) & (targets >= 0)
+            if valid_mask.any():
+                comp_lookup = self.composition_token_mask.to(targets.device)
+                comp_mask = comp_lookup[targets[valid_mask]]
+                if comp_mask.any():
+                    weighted_values = torch.full_like(
+                        weights[valid_mask],
+                        self.config.composition_loss_weight,
+                    )
+                    weights[valid_mask] = torch.where(
+                        comp_mask,
+                        weighted_values,
+                        weights[valid_mask],
+                    )
+
+            weights_flat = weights.view(-1)
+            loss = (loss_raw.view(-1) * weights_flat).sum()
+            normalizer = weights_flat.sum().clamp_min(1e-8)
+            loss = loss / normalizer
         else:
             # Inference mode
             logits = self.lm_head(x[:, [-1], :])  # only the last token

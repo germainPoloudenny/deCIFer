@@ -156,6 +156,9 @@ class TrainConfig:
     intensity_scale_range_max: float = 1.0
     mask_prob: float = 0.0
 
+    # Loss weighting
+    composition_loss_weight: float = 1.0
+
     # AdamW optimizer
     learning_rate: float = 6e-4  # max learning rate
     max_iters: int = 50_000  # total number of training iterations
@@ -445,6 +448,7 @@ if __name__ == "__main__":
         condition=C.condition,
         boundary_masking=C.boundary_masking,
         condition_embedder_hidden_layers=C.condition_embedder_hidden_layers,
+        composition_loss_weight=C.composition_loss_weight,
     )
 
     if C.init_from == "scratch":

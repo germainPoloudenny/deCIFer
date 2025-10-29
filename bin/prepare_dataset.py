@@ -361,10 +361,49 @@ def xrd_worker(args):
         logger = logging.getLogger()
         logger.exception(f"Exception in worker function with disc xrd calculation for CIF with name {cif_name}, with error:\n {e}\n\n")
     
+FORMULA_TOKENS = (
+    "_chemical_formula_sum",
+    "_chemical_formula_structural",
+)
+
+
+def _truncate_tokens_after_formula_line(tokens):
+    """
+    Truncate the token sequence immediately after the first chemical formula line.
+
+    The tokenizer emits newline tokens as separate entries. We keep everything up to
+    and including the first newline that follows either `_chemical_formula_sum` or
+    `_chemical_formula_structural`. If neither keyword is present, the sequence is
+    left untouched.
+    """
+    formula_indices = []
+    for key in FORMULA_TOKENS:
+        try:
+            idx = tokens.index(key)
+        except ValueError:
+            continue
+        else:
+            formula_indices.append(idx)
+
+    if not formula_indices:
+        return tokens
+
+    first_formula_idx = min(formula_indices)
+    try:
+        newline_idx = tokens.index("\n", first_formula_idx)
+    except ValueError:
+        # No newline afterwards; keep the original sequence.
+        return tokens
+
+    return tokens[: newline_idx + 1]
+
+
 def cif_tokenizer_worker(args):
     
     # Extract arguments
-    from_path, _, debug, to_dir = args
+    from_path, task_dict, debug, to_dir = args
+    task_dict = task_dict or {}
+    truncate_after_formula = task_dict.get("truncate_after_formula", False)
 
     # Open pkl and extract
     with gzip.open(from_path, "rb") as f:
@@ -383,7 +422,10 @@ def cif_tokenizer_worker(args):
         tokenize = tokenizer.tokenize_cif
         encode = tokenizer.encode
 
-        cif_tokens = encode(tokenize(cif_string_nosym))
+        tokens = tokenize(cif_string_nosym)
+        if truncate_after_formula:
+            tokens = _truncate_tokens_after_formula_line(tokens)
+        cif_tokens = encode(tokens)
     
         # Save output to pickle file
         output_dict = {
@@ -552,7 +594,7 @@ def save_h5(h5_path, cif_names, data_types):
                         raise TypeError(f"Unsupported data type for key '{data_key}': {type(data_value)}")
             current_size += 1
 
-def serialize(root, num_workers, seed, ignore_data_split=False):
+def serialize(root, num_workers, seed, ignore_data_split=False, *, token_subdir="cif_tokens", output_subdir="serialized"):
 
     # Locate available data TODO make this automatic based on folder names etc.
     pre_dir = os.path.join(root, "preprocessed")
@@ -561,7 +603,7 @@ def serialize(root, num_workers, seed, ignore_data_split=False):
     dataset_size = len(pre_paths)
     
     # Make output folder
-    ser_dir = os.path.join(root, "serialized")
+    ser_dir = os.path.join(root, output_subdir)
     os.makedirs(ser_dir, exist_ok=True)
     
     # Retrieve all cif names and stratification keys
@@ -583,7 +625,7 @@ def serialize(root, num_workers, seed, ignore_data_split=False):
     if len(xrd_paths) > 0:
         data_types.append({'dir': xrd_dir, 'keys': ['xrd']})
 
-    cif_token_dir = os.path.join(root, "cif_tokens")
+    cif_token_dir = os.path.join(root, token_subdir)
     cif_token_paths = glob(os.path.join(cif_token_dir, "*.pkl.gz"))
     if len(cif_token_paths) > 0:
         data_types.append({'dir': cif_token_dir, 'keys': ['cif_tokens']})
@@ -652,7 +694,9 @@ if __name__ == "__main__":
     parser.add_argument("--preprocess", help="preprocess files", action="store_true")
     parser.add_argument("--xrd", help="calculate XRD patterns", action="store_true")  # Placeholder for future implementation
     parser.add_argument("--tokenize", help="tokenize CIFs", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--tokenize-formula", help="tokenize CIFs truncated after the chemical formula line", action="store_true")
     parser.add_argument("--serialize", help="serialize data by hdf5 convertion", action="store_true")  # Placeholder for future implementation
+    parser.add_argument("--serialize-formula", help="serialize truncated-token data into a separate HDF5", action="store_true")
     parser.add_argument("--all", help="process, calculate xrd, tokenize and serialize", action="store_true")
     parser.add_argument("--ignore-data-split", help='Ignore data splitting and serialize all data into test.h5', action='store_true')
 
@@ -767,9 +811,31 @@ if __name__ == "__main__":
             debug = args.debug,
             num_workers = args.num_workers,
         )
+
+    if args.tokenize_formula:
+        run_subtasks(
+            root = args.data_dir,
+            worker_function = cif_tokenizer_worker,
+            get_from = "preprocessed",
+            save_to = "cif_tokens_formula",
+            task_kwargs_dict = {'truncate_after_formula': True},
+            announcement = "TOKENIZING CIFS (FORMULA-TRUNCATED)",
+            debug = args.debug,
+            num_workers = args.num_workers,
+        )
     
     if args.serialize:
         serialize(args.data_dir, args.num_workers, args.seed, args.ignore_data_split)
+
+    if args.serialize_formula:
+        serialize(
+            args.data_dir,
+            args.num_workers,
+            args.seed,
+            args.ignore_data_split,
+            token_subdir="cif_tokens_formula",
+            output_subdir="serialized_formula",
+        )
 
     # Store all arguments passed to the main function in centralized metadata
     metadata = {
