@@ -25,4 +25,4 @@ module load git
 
 git checkout grpo
 
-torchrun --nproc_per_node=2 bin/train.py --config configs/U-deCIFer_NOMA_training_config.yaml
+torchrun --nproc_per_node=2  bin/eval/evaluate.py   --model-ckpt runs/deCIFer/ckpt_eval.pt   --dataset-path ../crystallography/data/chili-100k/serialized/test.h5   --out-folder runs/deCIFer/eval_chili-100k --add-composition
