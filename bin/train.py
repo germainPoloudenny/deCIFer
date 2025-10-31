@@ -117,6 +117,8 @@ class TrainConfig:
     eval_only: bool = False  # if True, script exits right after the first eval
     always_save_checkpoint: bool = False  # if True, always save a checkpoint after each eval
     init_from: str = "scratch"  # 'scratch' or 'resume'
+    resume_from_best: bool = False  # when resuming, optionally load the best checkpoint instead of the latest
+    resume_from_best: bool = False  # when resuming, optionally load the best checkpoint instead of the latest
 
     # data
     dataset: str = ""  # Path to the dataset hdf5 files
@@ -373,6 +375,8 @@ if __name__ == "__main__":
 
     # Parse configuration
     C = parse_config()
+    resume_from_best = bool(getattr(C, "resume_from_best", False))
+    resume_from_best = bool(getattr(C, "resume_from_best", False))
 
     # Setup distributed environment (no-op when single process)
     use_distributed, world_size, rank, local_rank = setup_distributed(C)
@@ -496,7 +500,18 @@ if __name__ == "__main__":
 
         # Init model and load state dict
         model = Decifer(DeciferConfig(**model_args))
-        state_dict = checkpoint['current_model']
+        state_dict = checkpoint.get('current_model')
+        if resume_from_best:
+            best_state = checkpoint.get('best_model_state')
+            if best_state:
+                if is_main_process:
+                    print("Loading best model weights from checkpoint.", flush=True)
+                state_dict = best_state
+            elif is_main_process:
+                print("Best model weights not found in checkpoint; falling back to latest state.", flush=True)
+        if state_dict is None:
+            raise RuntimeError("Checkpoint is missing model weights required to resume training.")
+        state_dict = copy.deepcopy(state_dict)
         unwanted_prefix = "_orig_mod."
         for k, v in list(state_dict.items()):
             if k.startswith(unwanted_prefix):
@@ -526,7 +541,18 @@ if __name__ == "__main__":
     # Initialize Optimizer
     optimizer = model.configure_optimizers(C.weight_decay, C.learning_rate, (C.beta1, C.beta2))
     if C.init_from == "resume":
-        optimizer.load_state_dict(checkpoint["current_optimizer"])
+        optimizer_state = checkpoint.get("current_optimizer")
+        if resume_from_best:
+            best_optimizer_state = checkpoint.get("best_optimizer_state")
+            if best_optimizer_state:
+                if is_main_process:
+                    print("Loading best optimizer state from checkpoint.", flush=True)
+                optimizer_state = best_optimizer_state
+            elif is_main_process:
+                print("Best optimizer state not found in checkpoint; falling back to latest state.", flush=True)
+        if optimizer_state is None:
+            raise RuntimeError("Checkpoint is missing optimizer state required to resume training.")
+        optimizer.load_state_dict(copy.deepcopy(optimizer_state))
 
     # Compile model (pytorch 2.0) if specified
     if C.compile:
