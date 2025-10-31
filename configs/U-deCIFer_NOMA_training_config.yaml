@@ -1,6 +1,6 @@
 # CONFIG YAML
 
-out_dir: 'runs/U-deCIFer_h' # output directory for model checkpoint
+out_dir: 'runs/U-deCIFer' # output directory for model checkpoint
 eval_interval: 250  # how often to evaluate against the validation set
 eval_iters_train: 200 # how many iterations for evaluating training loss
 eval_iters_val: 200 # how many iterations for evaluating validation loss
@@ -13,7 +13,7 @@ dtype: 'float16' # device dtype
 always_save_checkpoint: True # always save checkpoint
 dist_backend: 'nccl' # backend used for torch.distributed
 
-tensorboard_log_dir: 'runs/U-deCIFer_h/tensorboard'
+tensorboard_log_dir: 'runs/U-deCIFer/tensorboard'
 
 
 validate: True # validate with a validation set
