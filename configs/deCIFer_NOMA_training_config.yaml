@@ -46,3 +46,4 @@ noise_range_max: 0.05 # max. for the uniform sampling of std. for additive noise
 
 condition: True # Enable conditioning (deCIFer)
 boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
+
