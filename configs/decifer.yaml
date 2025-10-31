@@ -49,4 +49,3 @@ boundary_masking: True # Enable boundary masking, to avoid cross contamination b
 
 composition_loss_weight: 10
 num_workers_dataloader: 4
-compile: true

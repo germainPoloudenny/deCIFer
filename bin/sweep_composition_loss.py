@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import yaml
 
@@ -35,7 +35,7 @@ def _ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _resolve_dataset_path(config: dict, override: Path | None) -> Path:
+def _resolve_dataset_path(config: dict, override: Optional[Path]) -> Path:
     if override is not None:
         return override
     dataset_root = config.get("dataset")
@@ -51,6 +51,7 @@ def _prepare_run_config(base_config: dict, *, run_dir: Path, weight: float, pati
     config["composition_loss_weight"] = float(weight)
     config["early_stopping_patience"] = int(patience)
     config["init_from"] = "resume"
+    config["resume_from_best"] = True
     config.setdefault("always_save_checkpoint", True)
     return config
 
@@ -81,7 +82,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--base-ckpt",
         type=Path,
-        default=Path("runs/deCIFer/ckpt_eval.pt"),
+        default=Path("runs/deCIFer/ckpt.pt"),
         help="Checkpoint used as the starting point for every run.",
     )
     parser.add_argument(
