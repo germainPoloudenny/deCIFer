@@ -48,4 +48,4 @@ condition: True # Enable conditioning (deCIFer)
 boundary_masking: True # Enable boundary masking, to avoid cross contamination between CIFs.
 
 num_workers_dataloader: 4
-compile: true
+resume_from_best: True
