@@ -497,12 +497,14 @@ if __name__ == "__main__":
         # Init model and load state dict
         model = Decifer(DeciferConfig(**model_args))
         state_dict = checkpoint.get('current_model')
+        loaded_best_state = False
         if resume_from_best:
             best_state = checkpoint.get('best_model_state')
             if best_state:
                 if is_main_process:
                     print("Loading best model weights from checkpoint.", flush=True)
                 state_dict = best_state
+                loaded_best_state = True
             elif is_main_process:
                 print("Best model weights not found in checkpoint; falling back to latest state.", flush=True)
         if state_dict is None:
@@ -525,6 +527,24 @@ if __name__ == "__main__":
                     print(f"Could not find {key}, creating empty list")
         training_metrics['iteration_number'] = checkpoint["training_metrics"]["iteration_number"]
         training_metrics['best_val_loss'] = checkpoint["training_metrics"]["best_val_loss"]
+
+        val_losses = training_metrics.get('val_losses') or []
+        epochs = training_metrics.get('epochs') or []
+        if val_losses:
+            best_idx = min(range(len(val_losses)), key=lambda idx: val_losses[idx])
+            best_val_loss = val_losses[best_idx]
+            training_metrics['best_val_loss'] = best_val_loss
+            if loaded_best_state and resume_from_best and epochs and best_idx < len(epochs):
+                best_iteration = int(epochs[best_idx])
+                training_metrics['iteration_number'] = best_iteration
+                if is_main_process:
+                    print(
+                        f"Resetting iteration counter to best checkpoint at iteration {best_iteration} "
+                        f"(val loss {best_val_loss:.4f}).",
+                        flush=True,
+                    )
+        elif loaded_best_state and resume_from_best and is_main_process:
+            print("Best model state loaded but no validation history found; continuing from stored iteration.", flush=True)
     else:
         raise Exception(f"[init_from] '{C.init_from}' not recognized")
 
