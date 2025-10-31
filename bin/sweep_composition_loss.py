@@ -118,7 +118,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--early-stopping-patience",
         type=int,
-        default=3,
+        default=2,
         help="Patience forwarded to train.py via the generated config.",
     )
     parser.add_argument(

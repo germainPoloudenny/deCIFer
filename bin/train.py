@@ -503,7 +503,7 @@ if __name__ == "__main__":
         model = Decifer(DeciferConfig(**model_args))
         state_dict = checkpoint.get('current_model')
         loaded_best_state = False
-        if resume_from_best and loaded_best_state:
+        if resume_from_best:
             best_state = checkpoint.get('best_model_state')
             if best_state:
                 if is_main_process:
@@ -539,34 +539,34 @@ if __name__ == "__main__":
         training_metrics['iteration_number'] = checkpoint["training_metrics"]["iteration_number"]
         training_metrics['best_val_loss'] = checkpoint["training_metrics"]["best_val_loss"]
 
-        if resume_from_best:
-            val_losses = training_metrics.get('val_losses') or []
-            epochs = training_metrics.get('epochs') or []
-            best_idx = None
-            if val_losses:
-                best_idx = min(range(len(val_losses)), key=lambda idx: val_losses[idx])
-                best_val_from_history = val_losses[best_idx]
-                training_metrics['best_val_loss'] = best_val_from_history
-            else:
-                best_idx = None
+        val_losses = training_metrics.get('val_losses') or []
+        epochs = training_metrics.get('epochs') or []
+        best_idx = None
+        if val_losses:
+            best_idx = min(range(len(val_losses)), key=lambda idx: val_losses[idx])
+            training_metrics['best_val_loss'] = val_losses[best_idx]
 
+        if resume_from_best and loaded_best_state:
             best_iteration = training_metrics.get('best_iteration')
             if best_idx is not None and best_idx < len(epochs):
-                best_iteration = epochs[best_idx]
+                best_iteration = int(epochs[best_idx])
             if best_iteration is None:
-                best_iteration = training_metrics['iteration_number']
-
-            # Clamp history to the best checkpoint so that iteration counters and losses align.
-            if best_idx is not None:
-                cutoff = best_idx + 1
-                for key in ['train_losses', 'val_losses', 'epochs']:
-                    history = training_metrics.get(key)
-                    if isinstance(history, list):
-                        training_metrics[key] = history[:cutoff]
+                best_iteration = int(training_metrics['iteration_number'])
 
             training_metrics['iteration_number'] = best_iteration
             training_metrics['best_iteration'] = best_iteration
             training_metrics['patience_counter'] = 0
+            if is_main_process and best_idx is not None:
+                print(
+                    f"Resetting iteration counter to best checkpoint at iteration {best_iteration} "
+                    f"(val loss {training_metrics['best_val_loss']:.4f}).",
+                    flush=True,
+                )
+            elif is_main_process and best_idx is None:
+                print(
+                    "Best model state loaded but no validation history found; continuing from stored iteration.",
+                    flush=True,
+                )
     else:
         raise Exception(f"[init_from] '{C.init_from}' not recognized")
 
@@ -934,7 +934,10 @@ if __name__ == "__main__":
 
                     val_loss = losses["val"]
                     best_val_loss = training_metrics['best_val_loss']
-                    if val_loss <= best_val_loss:
+                    if val_loss > best_val_loss and local_iteration_number != 0:
+                        training_metrics['patience_counter'] += 1
+                        print("Patience score increasing to:", training_metrics['patience_counter'])
+                    else:
                         training_metrics['best_val_loss'] = val_loss
                         training_metrics['best_iteration'] = training_metrics['iteration_number']
                         checkpoint['best_model_state'] = copy.deepcopy(unwrap_model(model).state_dict())
@@ -942,9 +945,6 @@ if __name__ == "__main__":
                         if training_metrics['patience_counter'] > 0:
                             print("Patience score resetting.")
                         training_metrics['patience_counter'] = 0
-                    else:
-                        training_metrics['patience_counter'] += 1
-                        print("Patience score increasing to:", training_metrics['patience_counter'])
 
                     if training_metrics['iteration_number'] > 0:
                         checkpoint.update({
