@@ -69,6 +69,13 @@ def _copy_checkpoint(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _count_existing_evaluations(eval_dir: Path, dataset_name: str) -> int:
+    eval_files_dir = eval_dir / "eval_files" / dataset_name
+    if not eval_files_dir.exists():
+        return 0
+    return sum(1 for _ in eval_files_dir.glob("*.pkl.gz"))
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sweep composition_loss_weight values with training + evaluation.")
     parser.add_argument("--config", type=Path, default=Path("configs/decifer.yaml"), help="Base YAML config.")
@@ -133,6 +140,11 @@ def parse_arguments() -> argparse.Namespace:
         default="",
         help="Extra CLI arguments appended after evaluate.py.",
     )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Force evaluation even when existing results already cover --max-samples.",
+    )
     parser.add_argument("--skip-existing", action="store_true", help="Skip runs where the output folder already exists.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     return parser.parse_args()
@@ -157,6 +169,14 @@ def main() -> None:
         run_ckpt = run_dir / "ckpt.pt"
         dataset_name = f"comp_weight_{weight_str}"
 
+        existing_eval_count = _count_existing_evaluations(eval_dir, dataset_name)
+        eval_complete = existing_eval_count >= args.max_samples
+        if eval_complete:
+            print(
+                f"✅ Found {existing_eval_count} evaluation files in {eval_dir}. "
+                "Training will be skipped for this run."
+            )
+
         if args.skip_existing and run_dir.exists():
             print(f"⏭️  Skipping weight={weight} (existing {run_dir}).")
             continue
@@ -164,11 +184,6 @@ def main() -> None:
         print(f"\n=== Sweep value: composition_loss_weight={weight} ===")
 
         _ensure_directory(run_dir)
-
-        if not args.dry_run:
-            _copy_checkpoint(args.base_ckpt, run_ckpt)
-        else:
-            print(f"Would copy {args.base_ckpt} -> {run_ckpt}")
 
         run_config = _prepare_run_config(
             base_config,
@@ -178,52 +193,68 @@ def main() -> None:
         )
         _write_config(run_config, config_path)
 
-        train_cmd: List[str] = [
-            "torchrun",
-            "--nproc_per_node",
-            str(args.train_nproc),
-            "bin/train.py",
-            "--config",
-            str(config_path),
-        ]
-        if args.train_extra_args:
-            train_cmd.extend(shlex.split(args.train_extra_args))
-
-        if args.dry_run:
-            print(" ".join(train_cmd))
+        if eval_complete:
+            if not run_ckpt.exists():
+                if args.dry_run:
+                    print(f"Would copy {args.base_ckpt} -> {run_ckpt} (missing checkpoint).")
+                else:
+                    _copy_checkpoint(args.base_ckpt, run_ckpt)
         else:
-            _invoke(train_cmd)
+            if not args.dry_run:
+                if not run_ckpt.exists():
+                    _copy_checkpoint(args.base_ckpt, run_ckpt)
+            else:
+                print(f"Would copy {args.base_ckpt} -> {run_ckpt}")
+
+            train_cmd: List[str] = [
+                "torchrun",
+                "--nproc_per_node",
+                str(args.train_nproc),
+                "bin/train.py",
+                "--config",
+                str(config_path),
+            ]
+            if args.train_extra_args:
+                train_cmd.extend(shlex.split(args.train_extra_args))
+
+            if args.dry_run:
+                print(" ".join(train_cmd))
+            else:
+                _invoke(train_cmd)
 
         _ensure_directory(eval_dir)
         model_ckpt = run_ckpt
 
-        evaluate_cmd: List[str] = [
-            "torchrun",
-            "--nproc_per_node",
-            str(args.eval_nproc),
-            "bin/eval/evaluate.py",
-            "--model-ckpt",
-            str(model_ckpt),
-            "--dataset-path",
-            str(dataset_path),
-            "--out-folder",
-            str(eval_dir),
-            "--dataset-name",
-            dataset_name,
-            "--max-samples",
-            str(args.max_samples),
-            "--distributed",
-            "--condition",
-            "--add-composition",
-            "--add-spacegroup",
-        ]
-        if args.evaluate_extra_args:
-            evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
-
-        if args.dry_run:
-            print(" ".join(evaluate_cmd))
+        run_evaluation = args.evaluate or not eval_complete
+        if not run_evaluation:
+            print("📊 Existing evaluations detected; skipping evaluation step.")
         else:
-            _invoke(evaluate_cmd)
+            evaluate_cmd: List[str] = [
+                "torchrun",
+                "--nproc_per_node",
+                str(args.eval_nproc),
+                "bin/eval/evaluate.py",
+                "--model-ckpt",
+                str(model_ckpt),
+                "--dataset-path",
+                str(dataset_path),
+                "--out-folder",
+                str(eval_dir),
+                "--dataset-name",
+                dataset_name,
+                "--max-samples",
+                str(args.max_samples),
+                "--distributed",
+            ]
+            if args.evaluate:
+                evaluate_cmd.append("--override")
+            if args.evaluate_extra_args:
+                evaluate_cmd.extend(shlex.split(args.evaluate_extra_args))
+
+            if args.dry_run:
+                print(" ".join(evaluate_cmd))
+            else:
+                _invoke(evaluate_cmd)
 
         eval_files_dir = eval_dir / "eval_files" / dataset_name
         collected_output = eval_dir
