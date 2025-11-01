@@ -19,7 +19,7 @@ tensorboard_log_dir: 'runs/deCIFer/tensorboard'
 validate: True # validate with a validation set
 
 dataset: '../crystallography/data/noma'
-batch_size: 64 # batch size
+batch_size: 32 # batch size
 block_size: 3076 # context window
 num_workers_dataloader: 4 # enable multi-process data loading
 
@@ -29,7 +29,7 @@ n_embd: 512 # n_embed
 dropout: 0.0 # dropout
 
 learning_rate: 1e-3 # learning rate (AdamW)
-gradient_accumulation_steps: 20  # used to simulate larger batch sizes
+gradient_accumulation_steps: 40  # used to simulate larger batch sizes
 max_iters: 50_000 # max number of epochs
 lr_decay_iters: 50_000 # learning reate decay
 min_lr: 1e-6 # min learning rate
