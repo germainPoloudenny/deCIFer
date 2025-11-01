@@ -843,6 +843,7 @@ def main():
         beam_size=args.beam_size,
         length_penalty=args.length_penalty,
         beam_deterministic=args.beam_deterministic,
+        override=args.override,
         rank=rank,
         world_size=world_size,
         use_distributed=use_distributed,
